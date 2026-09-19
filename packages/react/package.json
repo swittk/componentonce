@@ -1,6 +1,6 @@
 {
   "name": "@componentonce/react",
-  "version": "0.0.1",
+  "version": "0.1.0-beta.0",
   "type": "module",
   "files": [
     "dist",
@@ -34,5 +34,11 @@
     "react-dom": "^19.2.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.5"
+  },
+  "description": "React adapter for trusted ComponentOnce components using the host React runtime.",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
   }
 }

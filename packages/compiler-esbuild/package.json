@@ -1,9 +1,17 @@
 {
   "name": "@componentonce/compiler-esbuild",
-  "version": "0.0.1",
+  "version": "0.1.0-beta.0",
   "type": "module",
-  "files": ["dist", "README.md"],
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
@@ -21,5 +29,11 @@
     "react-dom": "^19.2.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.5"
+  },
+  "description": "Optional esbuild compiler and trusted loader for dynamically loaded ComponentOnce modules.",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
   }
 }

@@ -1,6 +1,6 @@
 # ComponentOnce engineering rules
 
-- ComponentOnce is intended to be publishable FOSS. No FreelancerOnce, Shinebright, Parse, Puck, database, filesystem, HTTP, or product-specific dependencies in core.
+- ComponentOnce is intended to be publishable FOSS. Core must not depend on any host application, database, filesystem, HTTP transport, visual editor, or product-specific runtime.
 - Keep three concepts distinct: persisted/configured component Props, arbitrary host-owned runtime Context, and arbitrary per-render Payload.
 - Context and Payload are generic host types. Core must never assume their shape.
 - Exact module id + version is deterministic. Hosts must be able to pin a version rather than silently taking latest.
