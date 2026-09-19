@@ -6,11 +6,19 @@ export interface ComponentOnceExactReference {
   readonly version: string;
 }
 
-/** A named version of the application API exposed to a component. */
-export interface ComponentOnceHostApi {
-  /** Stable host API name. */
+/** One named runtime or host capability required by a component implementation. */
+export interface ComponentOnceRequirement {
+  /** Stable capability name such as React, browser DOM, or an application SDK id. */
   readonly name: string;
-  /** Host-defined API version. */
+  /** Requirement version interpreted by the host compatibility rule. */
+  readonly version: string;
+}
+
+/** One named runtime or API capability actually available from a host. */
+export interface ComponentOnceCapability {
+  /** Stable capability name. */
+  readonly name: string;
+  /** Version exposed by this host. */
   readonly version: string;
 }
 
@@ -18,8 +26,8 @@ export interface ComponentOnceHostApi {
 export interface ComponentOnceManifest extends ComponentOnceExactReference {
   /** Optional human label for editor or catalog surfaces. */
   readonly displayName?: string;
-  /** Optional host API contract expected by this implementation. */
-  readonly hostApi?: ComponentOnceHostApi;
+  /** Runtime/application contracts which must all be satisfied before this component can run. */
+  readonly requirements?: readonly ComponentOnceRequirement[];
 }
 
 /** Optional validator used at an adapter boundary rather than on every render. */
@@ -146,63 +154,92 @@ export class ComponentOnceLoadedDefinitionMismatchError extends ComponentOnceErr
   }
 }
 
-/** Thrown when a component's declared host API is incompatible with the available API. */
-export class ComponentOnceIncompatibleHostApiError extends ComponentOnceError {
-  public readonly required: ComponentOnceHostApi;
-  public readonly available: ComponentOnceHostApi | undefined;
+/** Thrown when a component requires a capability the host did not provide. */
+export class ComponentOnceCapabilityMissingError extends ComponentOnceError {
+  public readonly requirement: ComponentOnceRequirement;
+
+  public constructor(requirement: ComponentOnceRequirement) {
+    super(
+      "Component requires capability \"" + requirement.name + "\" version \"" +
+        requirement.version + "\", but the host did not provide that capability.",
+    );
+    this.requirement = requirement;
+  }
+}
+
+/** Thrown when a named host capability exists but its version is incompatible. */
+export class ComponentOnceCapabilityVersionError extends ComponentOnceError {
+  public readonly requirement: ComponentOnceRequirement;
+  public readonly available: ComponentOnceCapability;
 
   public constructor(
-    required: ComponentOnceHostApi,
-    available: ComponentOnceHostApi | undefined,
+    requirement: ComponentOnceRequirement,
+    available: ComponentOnceCapability,
   ) {
-    const availableLabel =
-      available === undefined ? "none" : `"${available.name}" version "${available.version}"`;
     super(
-      `Component requires host API "${required.name}" version "${required.version}"; ` +
-        `available API is ${availableLabel}.`,
+      "Component requires capability \"" + requirement.name + "\" version \"" +
+        requirement.version + "\", but the host provides version \"" +
+        available.version + "\".",
     );
-    this.required = required;
+    this.requirement = requirement;
     this.available = available;
   }
 }
 
-/** A host-supplied version compatibility rule; arguments are required then available. */
-export type ComponentOnceVersionCompatibility = (
-  requiredVersion: string,
-  availableVersion: string,
+/** Host-supplied compatibility rule for one named requirement and matching available capability. */
+export type ComponentOnceCapabilityCompatibility = (
+  requirement: ComponentOnceRequirement,
+  available: ComponentOnceCapability,
 ) => boolean;
 
-/** Compare host API versions by exact string equality. */
-export function exactComponentOnceVersionCompatibility(
-  requiredVersion: string,
-  availableVersion: string,
+/** Compare one requirement and capability by exact name and version equality. */
+export function exactComponentOnceCapabilityCompatibility(
+  requirement: ComponentOnceRequirement,
+  available: ComponentOnceCapability,
 ): boolean {
-  return requiredVersion === availableVersion;
+  return requirement.name === available.name && requirement.version === available.version;
 }
 
-/** Check a manifest's host API requirement with a small pluggable version rule. */
-export function isComponentOnceHostCompatible(
-  manifest: ComponentOnceManifest,
-  available: ComponentOnceHostApi | undefined,
-  isVersionCompatible: ComponentOnceVersionCompatibility =
-    exactComponentOnceVersionCompatibility,
-): boolean {
-  const required = manifest.hostApi;
-  if (required === undefined) return true;
-  if (available === undefined || required.name !== available.name) return false;
-  return isVersionCompatible(required.version, available.version);
+/** Find the host capability with the exact name required by one component requirement. */
+export function findComponentOnceCapability(
+  requirement: ComponentOnceRequirement,
+  available: readonly ComponentOnceCapability[],
+): ComponentOnceCapability | undefined {
+  for (const capability of available) {
+    if (capability.name === requirement.name) return capability;
+  }
+  return undefined;
 }
 
-/** Assert a manifest's host API requirement or throw a descriptive compatibility error. */
-export function assertComponentOnceHostCompatible(
+/** Check whether every manifest requirement is satisfied by host capabilities. */
+export function isComponentOnceCompatible(
   manifest: ComponentOnceManifest,
-  available: ComponentOnceHostApi | undefined,
-  isVersionCompatible: ComponentOnceVersionCompatibility =
-    exactComponentOnceVersionCompatibility,
+  available: readonly ComponentOnceCapability[],
+  isCompatible: ComponentOnceCapabilityCompatibility =
+    exactComponentOnceCapabilityCompatibility,
+): boolean {
+  for (const requirement of manifest.requirements ?? []) {
+    const capability = findComponentOnceCapability(requirement, available);
+    if (capability === undefined || !isCompatible(requirement, capability)) return false;
+  }
+  return true;
+}
+
+/** Assert every manifest requirement before executing or mounting its implementation. */
+export function assertComponentOnceCompatible(
+  manifest: ComponentOnceManifest,
+  available: readonly ComponentOnceCapability[],
+  isCompatible: ComponentOnceCapabilityCompatibility =
+    exactComponentOnceCapabilityCompatibility,
 ): void {
-  if (isComponentOnceHostCompatible(manifest, available, isVersionCompatible)) return;
-  if (manifest.hostApi !== undefined) {
-    throw new ComponentOnceIncompatibleHostApiError(manifest.hostApi, available);
+  for (const requirement of manifest.requirements ?? []) {
+    const capability = findComponentOnceCapability(requirement, available);
+    if (capability === undefined) {
+      throw new ComponentOnceCapabilityMissingError(requirement);
+    }
+    if (!isCompatible(requirement, capability)) {
+      throw new ComponentOnceCapabilityVersionError(requirement, capability);
+    }
   }
 }
 

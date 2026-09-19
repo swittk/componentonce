@@ -4,20 +4,25 @@ Small FOSS-ready contracts for registering, loading, and rendering trusted, vers
 
 ComponentOnce keeps three values distinct:
 
-- **Props** are the persisted or configured component values.
-- **HostContext** is an arbitrary rich runtime object owned by the host application.
-- **Payload** is arbitrary application or domain data supplied for one render.
+- Props are persisted/configured component values.
+- HostContext is an arbitrary rich runtime object owned by the host application.
+- Payload is arbitrary application/domain data supplied for one render or mount.
 
-## Packages
+## Architecture
 
-### `@componentonce/core`
+@componentonce/core is renderer-agnostic. It owns exact identities, isolated registries, loader contracts, validators, and generic runtime/application capability requirements.
 
-The core package provides manifests, typed definitions, isolated versioned registries, loader adapter contracts, exact load-and-register verification, and pluggable host API compatibility checks. It imports no React, compiler, storage implementation, transport, database, or application code.
+Renderer adapters sit above core:
 
-Exact `id` plus exact `version` lookup is deterministic. Hosts may explicitly select a default version, while pinned content can always call `getExact(id, version)`. See the [core API guide](./packages/core/README.md).
+- @componentonce/react renders trusted components with the host React singleton.
+- @componentonce/dom mounts trusted ordinary DOM/HTML implementations with explicit update/destroy lifecycle.
 
-### `@componentonce/react`
+@componentonce/compiler-esbuild is optional trusted tooling. It can compile generic JavaScript/TypeScript modules, while compileTrustedReactModule is a React convenience wrapper that leaves React and JSX runtimes external.
 
-The React package provides `defineReactComponent<Props, HostContext, Payload>()`, typed rendering, opt-in validation, raw boundary helpers, and host-specific type helpers. React stays a peer dependency so trusted dynamic modules share the host React instance. See the [React API guide](./packages/react/README.md) and the [two-host consumer example](./packages/react/examples/two-hosts.tsx).
+Storage, transport, databases, bundle locations, application SDKs, Puck, FreelancerOnce, and Shinebright remain host concerns.
 
-The v0 scope is trusted internal component code. Loading remains a host adapter concern, and core does not impose a sandbox or marketplace policy.
+## Compatibility
+
+A manifest may require multiple named capabilities, for example React plus an application SDK. The host supplies available capabilities before render or mount. Exact name/version matching is the default; hosts may provide their own compatibility predicate without adding a semver dependency to core.
+
+The v0 scope is trusted internal component code. ComponentOnce does not impose a marketplace or sandbox policy.

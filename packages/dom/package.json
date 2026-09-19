@@ -1,0 +1,27 @@
+{
+  "name": "@componentonce/dom",
+  "version": "0.0.1",
+  "type": "module",
+  "files": ["dist", "examples", "README.md"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "precheck": "pnpm --filter @componentonce/core build",
+    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "pretest": "pnpm --filter @componentonce/core build",
+    "test": "vitest run",
+    "prebuild": "pnpm --filter @componentonce/core build",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@componentonce/core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.5"
+  }
+}

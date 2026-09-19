@@ -1,9 +1,21 @@
 import { createElement, type ComponentType, type ReactElement } from "react";
-import type {
-  ComponentOnceDefinition,
-  ComponentOnceManifest,
-  ComponentOnceValidator,
+import {
+  assertComponentOnceCompatible,
+  type ComponentOnceCapability,
+  type ComponentOnceCapabilityCompatibility,
+  type ComponentOnceDefinition,
+  type ComponentOnceManifest,
+  type ComponentOnceRequirement,
+  type ComponentOnceValidator,
 } from "@componentonce/core";
+
+/** Stable core capability name used for the host React runtime. */
+export const REACT_CAPABILITY_NAME = "react";
+
+/** Create one generic core requirement for a React runtime version. */
+export function createReactRequirement(version: string): ComponentOnceRequirement {
+  return { name: REACT_CAPABILITY_NAME, version };
+}
 
 /** Props passed to one trusted React implementation by its host. */
 export interface ComponentOnceReactRenderInput<TProps, THostContext, TPayload> {
@@ -45,6 +57,10 @@ export interface ComponentOnceReactRendererInput<TProps, THostContext, TPayload>
   readonly definition: ComponentOnceReactDefinition<TProps, THostContext, TPayload>;
   /** Validation is off by default; `true` requests both validators. */
   readonly validation?: boolean | ComponentOnceReactValidationRequest;
+  /** Runtime/application capabilities exposed by the host. */
+  readonly hostCapabilities?: readonly ComponentOnceCapability[];
+  /** Optional host-defined compatibility policy; exact matching is the core default. */
+  readonly capabilityCompatibility?: ComponentOnceCapabilityCompatibility;
 }
 
 /** Unknown props and payload received at an untyped host boundary. */
@@ -58,6 +74,10 @@ export interface ComponentOnceReactBoundaryInput<THostContext> {
 export interface ComponentOnceReactBoundaryRenderInput<TProps, THostContext, TPayload>
   extends ComponentOnceReactBoundaryInput<THostContext> {
   readonly definition: ComponentOnceReactDefinition<TProps, THostContext, TPayload>;
+  /** Runtime/application capabilities exposed by the host. */
+  readonly hostCapabilities?: readonly ComponentOnceCapability[];
+  /** Optional host-defined compatibility policy; exact matching is the core default. */
+  readonly capabilityCompatibility?: ComponentOnceCapabilityCompatibility;
 }
 
 /** A definition field that can carry an optional boundary validator. */
@@ -118,6 +138,11 @@ export function defineReactComponent<TProps, THostContext, TPayload>(
 export function renderReactComponent<TProps, THostContext, TPayload>(
   input: ComponentOnceReactRendererInput<TProps, THostContext, TPayload>,
 ): ReactElement {
+  assertComponentOnceCompatible(
+    input.definition.manifest,
+    input.hostCapabilities ?? [],
+    input.capabilityCompatibility,
+  );
   const validation = normalizeValidation(input.validation);
   const props = validation.props
     ? validateField(input.definition, "props", input.props)
@@ -150,7 +175,16 @@ export function renderReactComponentBoundary<TProps, THostContext, TPayload>(
   input: ComponentOnceReactBoundaryRenderInput<TProps, THostContext, TPayload>,
 ): ReactElement {
   const validated = validateReactComponentBoundary(input.definition, input);
-  return renderReactComponent({ definition: input.definition, ...validated });
+  return renderReactComponent({
+    definition: input.definition,
+    ...validated,
+    ...(input.hostCapabilities === undefined
+      ? {}
+      : { hostCapabilities: input.hostCapabilities }),
+    ...(input.capabilityCompatibility === undefined
+      ? {}
+      : { capabilityCompatibility: input.capabilityCompatibility }),
+  });
 }
 
 /** Create concise definition and rendering helpers pinned to one host's own types. */
