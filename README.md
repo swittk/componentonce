@@ -19,7 +19,7 @@ Renderer adapters sit above core:
 
 @componentonce/compiler-esbuild is optional trusted tooling. It can compile generic JavaScript/TypeScript modules, while compileTrustedReactModule is a React convenience wrapper that leaves React and JSX runtimes external.
 
-Storage, transport, databases, bundle locations, application SDKs, Puck, FreelancerOnce, and Shinebright remain host concerns.
+Storage, transport, databases, bundle locations, visual editors, and application SDKs remain host concerns.
 
 ## Compatibility
 

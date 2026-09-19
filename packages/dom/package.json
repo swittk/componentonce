@@ -1,8 +1,12 @@
 {
   "name": "@componentonce/dom",
-  "version": "0.0.1",
+  "version": "0.1.0-beta.0",
   "type": "module",
-  "files": ["dist", "examples", "README.md"],
+  "files": [
+    "dist",
+    "examples",
+    "README.md"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -23,5 +27,11 @@
   "devDependencies": {
     "typescript": "^5.9.3",
     "vitest": "^4.0.5"
+  },
+  "description": "DOM adapter for trusted ComponentOnce components with explicit mount, update, and destroy lifecycle.",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
   }
 }
