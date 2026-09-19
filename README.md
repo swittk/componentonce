@@ -1,28 +1,102 @@
 # ComponentOnce
 
-Small FOSS-ready contracts for registering, loading, and rendering trusted, versioned, application-specific components.
+Small FOSS-ready contracts for registering, loading, packaging, and rendering trusted, versioned, application-specific components.
 
 ComponentOnce keeps three values distinct:
 
-- Props are persisted/configured component values.
-- HostContext is an arbitrary rich runtime object owned by the host application.
-- Payload is arbitrary application/domain data supplied for one render or mount.
+- **Props** are persisted/configured component values.
+- **HostContext** is an arbitrary rich runtime object owned by the host application.
+- **Payload** is arbitrary application/domain data supplied for one render or mount.
 
-## Architecture
+## Quick React flow
 
-@componentonce/core is renderer-agnostic. It owns exact identities, isolated registries, loader contracts, validators, and generic runtime/application capability requirements.
+A component author writes an ordinary typed definition:
 
-Renderer adapters sit above core:
+```tsx
+import {
+  createReactRequirement,
+  defineReactComponent,
+} from "@componentonce/react";
 
-- @componentonce/react renders trusted components with the host React singleton.
-- @componentonce/dom mounts trusted ordinary DOM/HTML implementations with explicit update/destroy lifecycle.
+interface Props {
+  readonly title: string;
+}
 
-@componentonce/compiler-esbuild is optional trusted tooling. It can compile generic JavaScript/TypeScript modules, while compileTrustedReactModule is a React convenience wrapper that leaves React and JSX runtimes external.
+interface HostContext {
+  readonly format: (value: number) => string;
+}
 
-Storage, transport, databases, bundle locations, visual editors, and application SDKs remain host concerns.
+interface Payload {
+  readonly total: number;
+}
+
+export const definition = defineReactComponent<Props, HostContext, Payload>({
+  manifest: {
+    id: "example/total-card",
+    version: "1.0.0",
+    requirements: [createReactRequirement("19.3.0")],
+  },
+  component({ props, context, payload }) {
+    return <strong>{props.title}: {context.format(payload.total)}</strong>;
+  },
+});
+```
+
+The React requirement is explicit and persisted. Choose the exact version, or a stable version convention, that your host compatibility policy understands.
+
+Build a self-describing package:
+
+```sh
+componentonce build ./src/total-card.tsx \
+  --renderer react \
+  --out ./dist/total-card.componentonce.json
+```
+
+The package contains the manifest plus the integrity-protected executable bundle. A catalog can read `package.manifest` without executing component code. The trusted high-level builder evaluates the module once during build to discover that manifest.
+
+Application integrations bind the host context type and runtime policy once; each component still owns its Props and Payload types:
+
+```ts
+import { createReactHost } from "@componentonce/react";
+
+const components = createReactHost<HostContext>({
+  capabilities: [{ name: "example-api", version: "1" }],
+});
+
+const element = components.render({
+  definition,
+  props: { title: "Total" },
+  context,
+  payload,
+});
+```
+
+The React adapter automatically advertises the actual peer React singleton/version. Callers do not repeat React or application capabilities on every render.
+
+## Packages
+
+### `@componentonce/core`
+
+Renderer-agnostic exact identities, versioned registries, loader contracts, validators, and generic runtime/application capability requirements. It imports no React, compiler, storage, transport, database, or application code.
+
+### `@componentonce/react`
+
+React definitions and rendering using the host React singleton, boundary validation, automatic React capability reporting, and host-bound helpers.
+
+### `@componentonce/dom`
+
+React-free ordinary DOM components with explicit `mount -> update -> destroy` lifecycle, automatic DOM capability reporting, and host-bound helpers.
+
+### `@componentonce/compiler-esbuild`
+
+Optional trusted build tooling. It supports low-level compilation plus self-describing package helpers and the `componentonce build` CLI. Relative imports can be bundled; package/runtime imports stay explicit host externals.
 
 ## Compatibility
 
-A manifest may require multiple named capabilities, for example React plus an application SDK. The host supplies available capabilities before render or mount. Exact name/version matching is the default; hosts may provide their own compatibility predicate without adding a semver dependency to core.
+A manifest can require multiple named capabilities, for example React plus an application SDK. Exact name/version equality is the default. Hosts can supply another compatibility predicate when they intentionally support ranges or other version policies.
 
-The v0 scope is trusted internal component code. ComponentOnce does not impose a marketplace or sandbox policy.
+Sharing the host React singleton prevents duplicate-React hook failures. Capability checks separately prevent a component authored against an incompatible React/API version from rendering accidentally.
+
+## Trust model
+
+The v0 target is trusted internal component code. The esbuild evaluator uses `new Function`; it is not a security sandbox. Storage, transport, databases, visual editors, and marketplace policy remain host concerns.

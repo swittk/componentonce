@@ -3,16 +3,23 @@ import type { ComponentType } from "react";
 import * as React from "react";
 import * as jsxRuntime from "react/jsx-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   COMPONENTONCE_TRUSTED_BUNDLE_FORMAT,
+  COMPONENTONCE_TRUSTED_PACKAGE_FORMAT,
   ComponentOnceCompileError,
   ComponentOnceIntegrityError,
   ComponentOnceMissingExternalError,
+  ComponentOncePackageManifestMismatchError,
+  buildTrustedReactPackage,
   calculateTrustedBundleIntegrity,
   compileTrustedModule,
   compileTrustedReactModule,
   instantiateTrustedBundle,
+  instantiateTrustedComponentPackage,
+  parseTrustedComponentPackage,
+  serializeTrustedComponentPackage,
 } from "../src/index.js";
 
 interface CounterProps {
@@ -192,6 +199,23 @@ describe("compileTrustedReactModule", () => {
   });
 
 
+  it("bundles relative source imports when resolveDir is supplied", async () => {
+    const artifact = await compileTrustedModule({
+      source: `
+        import { decorate } from "./helper";
+        export const value = decorate("relative");
+      `,
+      sourceFileName: "entry.ts",
+      resolveDir: fileURLToPath(new URL("./fixtures", import.meta.url)),
+    });
+
+    expect(artifact.externalModules).toEqual([]);
+    const loaded = instantiateTrustedBundle<{ readonly value: string }>(artifact, {
+      externals: {},
+    });
+    expect(loaded.value).toBe("[RELATIVE]");
+  });
+
   it("compiles and instantiates a plain trusted module without implicit React externals", async () => {
     const artifact = await compileTrustedModule({
       source: `
@@ -232,5 +256,68 @@ describe("compileTrustedReactModule", () => {
         expectedIntegrity: artifact.integrity,
       }),
     ).toThrow(ComponentOnceIntegrityError);
+  });
+
+  it("builds a self-describing React package that can be inspected before execution", async () => {
+    const componentPackage = await buildTrustedReactPackage({
+      source: counterSource,
+      sourceFileName: "counter.tsx",
+      externals: {
+        react: React,
+        "react/jsx-runtime": jsxRuntime,
+      },
+    });
+
+    expect(componentPackage.format).toBe(COMPONENTONCE_TRUSTED_PACKAGE_FORMAT);
+    expect(componentPackage.renderer).toBe("react");
+    expect(componentPackage.manifest).toEqual({
+      id: "example.counter",
+      version: "1.0.0",
+      displayName: "Counter",
+    });
+    expect(componentPackage.definitionExport).toBe("definition");
+
+    const stored = serializeTrustedComponentPackage(componentPackage);
+    const parsed = parseTrustedComponentPackage(stored);
+    expect(parsed.manifest.id).toBe("example.counter");
+
+    const definition = instantiateTrustedComponentPackage<CounterDefinition>(parsed, {
+      externals: {
+        react: React,
+        "react/jsx-runtime": jsxRuntime,
+      },
+    });
+    const html = renderToStaticMarkup(
+      React.createElement(definition.implementation, {
+        props: { initial: 6 },
+        context: { prefix: "packaged" },
+        payload: { suffix: "ok" },
+      }),
+    );
+    expect(html).toBe("<button>packaged:6:ok</button>");
+  });
+
+  it("rejects a package envelope whose manifest no longer matches its executable definition", async () => {
+    const componentPackage = await buildTrustedReactPackage({
+      source: counterSource,
+      sourceFileName: "counter.tsx",
+      externals: {
+        react: React,
+        "react/jsx-runtime": jsxRuntime,
+      },
+    });
+    const stalePackage = {
+      ...componentPackage,
+      manifest: { ...componentPackage.manifest, version: "9.9.9" },
+    };
+
+    expect(() =>
+      instantiateTrustedComponentPackage(stalePackage, {
+        externals: {
+          react: React,
+          "react/jsx-runtime": jsxRuntime,
+        },
+      }),
+    ).toThrow(ComponentOncePackageManifestMismatchError);
   });
 });

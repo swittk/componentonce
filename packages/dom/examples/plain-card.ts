@@ -1,4 +1,4 @@
-import { defineDomComponent } from "@componentonce/dom";
+import { createDomRequirement, defineDomComponent } from "@componentonce/dom";
 
 export const plainCard = defineDomComponent<
   { readonly title: string },
@@ -8,7 +8,7 @@ export const plainCard = defineDomComponent<
   manifest: {
     id: "example/plain-card",
     version: "1.0.0",
-    requirements: [{ name: "browser-dom", version: "1" }],
+    requirements: [createDomRequirement("1")],
   },
   implementation: {
     mount(target, input) {

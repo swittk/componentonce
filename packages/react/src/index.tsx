@@ -1,4 +1,4 @@
-import { createElement, type ComponentType, type ReactElement } from "react";
+import { createElement, version as reactVersion, type ComponentType, type ReactElement } from "react";
 import {
   assertComponentOnceCompatible,
   type ComponentOnceCapability,
@@ -12,7 +12,7 @@ import {
 /** Stable core capability name used for the host React runtime. */
 export const REACT_CAPABILITY_NAME = "react";
 
-/** Create one generic core requirement for a React runtime version. */
+/** Create an explicit React runtime requirement recorded in the component manifest. */
 export function createReactRequirement(version: string): ComponentOnceRequirement {
   return { name: REACT_CAPABILITY_NAME, version };
 }
@@ -122,6 +122,47 @@ export interface ComponentOnceReactHostHelpers<THostContext, TPayload> {
   ): ReactElement;
 }
 
+/** Host-wide runtime policy bound once by createReactHost. */
+export interface ComponentOnceReactHostOptions {
+  /** Additional application/runtime capabilities; the actual peer React version is added automatically. */
+  readonly capabilities?: readonly ComponentOnceCapability[];
+  /** Optional compatibility rule shared by every render from this host helper. */
+  readonly capabilityCompatibility?: ComponentOnceCapabilityCompatibility;
+}
+
+/** Render input for a host whose capability policy has already been bound. */
+export type ComponentOnceBoundReactRendererInput<TProps, THostContext, TPayload> = Omit<
+  ComponentOnceReactRendererInput<TProps, THostContext, TPayload>,
+  "hostCapabilities" | "capabilityCompatibility"
+>;
+
+/** Boundary render input for a host whose capability policy has already been bound. */
+export type ComponentOnceBoundReactBoundaryRenderInput<TProps, THostContext, TPayload> = Omit<
+  ComponentOnceReactBoundaryRenderInput<TProps, THostContext, TPayload>,
+  "hostCapabilities" | "capabilityCompatibility"
+>;
+
+/** Concise React host facade with application types and runtime compatibility policy fixed once. */
+export interface ComponentOnceReactHost<THostContext> {
+  /** Define a component while choosing its own persisted Props and per-render Payload types. */
+  define<TProps, TPayload>(
+    input: DefineReactComponentInput<TProps, THostContext, TPayload>,
+  ): ComponentOnceReactDefinition<TProps, THostContext, TPayload>;
+  /** Render typed values using the host-wide capability policy. */
+  render<TProps, TPayload>(
+    input: ComponentOnceBoundReactRendererInput<TProps, THostContext, TPayload>,
+  ): ReactElement;
+  /** Validate unknown props/payload without changing the trusted host context. */
+  validateBoundary<TProps, TPayload>(
+    definition: ComponentOnceReactDefinition<TProps, THostContext, TPayload>,
+    input: ComponentOnceReactBoundaryInput<THostContext>,
+  ): ComponentOnceReactRenderInput<TProps, THostContext, TPayload>;
+  /** Validate and render unknown boundary values using the host-wide capability policy. */
+  renderBoundary<TProps, TPayload>(
+    input: ComponentOnceBoundReactBoundaryRenderInput<TProps, THostContext, TPayload>,
+  ): ReactElement;
+}
+
 /** Define one typed React component without teaching core anything about React. */
 export function defineReactComponent<TProps, THostContext, TPayload>(
   input: DefineReactComponentInput<TProps, THostContext, TPayload>,
@@ -140,7 +181,7 @@ export function renderReactComponent<TProps, THostContext, TPayload>(
 ): ReactElement {
   assertComponentOnceCompatible(
     input.definition.manifest,
-    input.hostCapabilities ?? [],
+    withReactCapability(input.hostCapabilities),
     input.capabilityCompatibility,
   );
   const validation = normalizeValidation(input.validation);
@@ -197,7 +238,7 @@ export function createReactHostHelpers<THostContext, TPayload>(): ComponentOnceR
       defineReactComponent(input),
     render: <TProps,>(input: ComponentOnceReactRendererInput<TProps, THostContext, TPayload>) =>
       renderReactComponent(input),
-    validateBoundary: <TProps,>(
+    validateBoundary: <TProps, TPayload>(
       definition: ComponentOnceReactDefinition<TProps, THostContext, TPayload>,
       input: ComponentOnceReactBoundaryInput<THostContext>,
     ) => validateReactComponentBoundary(definition, input),
@@ -205,6 +246,51 @@ export function createReactHostHelpers<THostContext, TPayload>(): ComponentOnceR
       input: ComponentOnceReactBoundaryRenderInput<TProps, THostContext, TPayload>,
     ) => renderReactComponentBoundary(input),
   };
+}
+
+/**
+ * Create the normal application-facing React facade.
+ *
+ * The React capability comes from this package's peer React singleton, so callers only provide
+ * additional host capabilities once instead of repeating them on every render.
+ */
+export function createReactHost<THostContext>(
+  options: ComponentOnceReactHostOptions = {},
+): ComponentOnceReactHost<THostContext> {
+  const hostCapabilities = options.capabilities;
+  const capabilityCompatibility = options.capabilityCompatibility;
+  return {
+    define: <TProps, TPayload>(
+      input: DefineReactComponentInput<TProps, THostContext, TPayload>,
+    ) => defineReactComponent(input),
+    render: <TProps, TPayload>(
+      input: ComponentOnceBoundReactRendererInput<TProps, THostContext, TPayload>,
+    ) =>
+      renderReactComponent({
+        ...input,
+        ...(hostCapabilities === undefined ? {} : { hostCapabilities }),
+        ...(capabilityCompatibility === undefined ? {} : { capabilityCompatibility }),
+      }),
+    validateBoundary: <TProps, TPayload>(
+      definition: ComponentOnceReactDefinition<TProps, THostContext, TPayload>,
+      input: ComponentOnceReactBoundaryInput<THostContext>,
+    ) => validateReactComponentBoundary(definition, input),
+    renderBoundary: <TProps, TPayload>(
+      input: ComponentOnceBoundReactBoundaryRenderInput<TProps, THostContext, TPayload>,
+    ) =>
+      renderReactComponentBoundary({
+        ...input,
+        ...(hostCapabilities === undefined ? {} : { hostCapabilities }),
+        ...(capabilityCompatibility === undefined ? {} : { capabilityCompatibility }),
+      }),
+  };
+}
+
+function withReactCapability(
+  available: readonly ComponentOnceCapability[] | undefined,
+): readonly ComponentOnceCapability[] {
+  const extra = (available ?? []).filter((capability) => capability.name !== REACT_CAPABILITY_NAME);
+  return [{ name: REACT_CAPABILITY_NAME, version: reactVersion }, ...extra];
 }
 
 function normalizeValidation(
