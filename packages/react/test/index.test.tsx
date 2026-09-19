@@ -1,8 +1,10 @@
 import { ComponentOnceCapabilityVersionError } from "@componentonce/core";
+import { version as reactVersion } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
   ComponentOnceReactValidatorMissingError,
+  createReactHost,
   createReactHostHelpers,
   createReactRequirement,
   defineReactComponent,
@@ -203,12 +205,12 @@ describe("React definitions and rendering", () => {
     }
   });
 
-  it("rejects a React runtime version mismatch before rendering", () => {
+  it("checks React requirements against the actual peer React runtime automatically", () => {
     const definition = defineReactComponent<CardProps, AppContext, CardPayload>({
       manifest: {
-        id: "example/react-19-card",
+        id: "example/react-18-card",
         version: "1.0.0",
-        requirements: [createReactRequirement("19")],
+        requirements: [createReactRequirement("18")],
       },
       component: () => <span>never rendered</span>,
     });
@@ -222,9 +224,52 @@ describe("React definitions and rendering", () => {
           services: { audit: () => undefined },
         },
         payload: { recordId: 1 },
-        hostCapabilities: [{ name: "react", version: "18" }],
       }),
     ).toThrow(ComponentOnceCapabilityVersionError);
+  });
+
+  it("binds application capabilities and compatibility policy once", () => {
+    const host = createReactHost<AppContext>({
+      capabilities: [{ name: "example-api", version: "2" }],
+    });
+    const definition = host.define<CardProps, CardPayload>({
+      manifest: {
+        id: "example/bound-host-card",
+        version: "1.0.0",
+        requirements: [
+          createReactRequirement(reactVersion),
+          { name: "example-api", version: "2" },
+        ],
+      },
+      component: ({ props, payload }) => <span>{props.title}:{payload.recordId}</span>,
+    });
+
+    const element = host.render({
+      definition,
+      props: { title: "bound" },
+      context: {
+        formatTitle: (title) => title,
+        services: { audit: () => undefined },
+      },
+      payload: { recordId: 12 },
+    });
+
+    expect(renderToStaticMarkup(element)).toBe("<span>bound:12</span>");
+
+    const messageDefinition = host.define<{ readonly prefix: string }, { readonly message: string }>({
+      manifest: { id: "example/bound-message", version: "1.0.0" },
+      component: ({ props, payload }) => <span>{props.prefix}{payload.message}</span>,
+    });
+    const messageElement = host.render({
+      definition: messageDefinition,
+      props: { prefix: ">" },
+      context: {
+        formatTitle: (title) => title,
+        services: { audit: () => undefined },
+      },
+      payload: { message: "different payload" },
+    });
+    expect(renderToStaticMarkup(messageElement)).toBe("<span>&gt;different payload</span>");
   });
 
   it("lets a host deliberately accept a compatible React runtime range", () => {
@@ -248,7 +293,7 @@ describe("React definitions and rendering", () => {
       hostCapabilities: [{ name: "react", version: "19" }],
       capabilityCompatibility: (requirement, available) =>
         requirement.name === available.name &&
-        Number(available.version) >= Number(requirement.version),
+        Number.parseInt(available.version, 10) >= Number.parseInt(requirement.version, 10),
     });
 
     expect(renderToStaticMarkup(element)).toBe("<span>compatible</span>");

@@ -1,9 +1,10 @@
 {
   "name": "@componentonce/compiler-esbuild",
-  "version": "0.1.0-beta.0",
+  "version": "0.1.0-beta.1",
   "type": "module",
   "files": [
     "dist",
+    "examples",
     "README.md"
   ],
   "exports": {
@@ -35,5 +36,24 @@
   "publishConfig": {
     "access": "public",
     "tag": "beta"
+  },
+  "bin": {
+    "componentonce": "./dist/cli.js"
+  },
+  "peerDependencies": {
+    "@componentonce/dom": "workspace:*",
+    "@componentonce/react": "workspace:*",
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "@componentonce/dom": {
+      "optional": true
+    },
+    "@componentonce/react": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
   }
 }

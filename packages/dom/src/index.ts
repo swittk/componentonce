@@ -7,6 +7,17 @@ import {
   type ComponentOnceValidator,
 } from "@componentonce/core";
 
+/** Stable capability name for the DOM adapter contract. */
+export const DOM_CAPABILITY_NAME = "browser-dom";
+
+/** Current DOM adapter contract version exposed automatically by this package. */
+export const DOM_CAPABILITY_VERSION = "1";
+
+/** Create an explicit requirement for a DOM adapter contract version. */
+export function createDomRequirement(version: string) {
+  return { name: DOM_CAPABILITY_NAME, version } as const;
+}
+
 /** Typed values passed to a DOM component instance. */
 export interface ComponentOnceDomRenderInput<TProps, THostContext, TPayload> {
   readonly props: TProps;
@@ -80,6 +91,47 @@ export interface ComponentOnceDomBoundaryMountInput<TProps, THostContext, TPaylo
   readonly capabilityCompatibility?: ComponentOnceCapabilityCompatibility;
 }
 
+/** Host-wide runtime policy bound once by createDomHost. */
+export interface ComponentOnceDomHostOptions {
+  /** Additional application/runtime capabilities; the DOM adapter capability is added automatically. */
+  readonly capabilities?: readonly ComponentOnceCapability[];
+  /** Optional compatibility rule shared by every mount from this host helper. */
+  readonly capabilityCompatibility?: ComponentOnceCapabilityCompatibility;
+}
+
+/** Mount input for a DOM host whose capability policy has already been bound. */
+export type ComponentOnceBoundDomMountInput<TProps, THostContext, TPayload> = Omit<
+  ComponentOnceDomMountInput<TProps, THostContext, TPayload>,
+  "hostCapabilities" | "capabilityCompatibility"
+>;
+
+/** Boundary mount input for a DOM host whose capability policy has already been bound. */
+export type ComponentOnceBoundDomBoundaryMountInput<TProps, THostContext, TPayload> = Omit<
+  ComponentOnceDomBoundaryMountInput<TProps, THostContext, TPayload>,
+  "hostCapabilities" | "capabilityCompatibility"
+>;
+
+/** Concise DOM host facade with application types and runtime compatibility policy fixed once. */
+export interface ComponentOnceDomHost<THostContext> {
+  /** Define a component while choosing its own persisted Props and per-render Payload types. */
+  define<TProps, TPayload>(
+    input: DefineDomComponentInput<TProps, THostContext, TPayload>,
+  ): ComponentOnceDomDefinition<TProps, THostContext, TPayload>;
+  /** Mount typed values using the host-wide capability policy. */
+  mount<TProps, TPayload>(
+    input: ComponentOnceBoundDomMountInput<TProps, THostContext, TPayload>,
+  ): ComponentOnceDomMountHandle<TProps, THostContext, TPayload>;
+  /** Validate unknown props/payload without changing the trusted host context. */
+  validateBoundary<TProps, TPayload>(
+    definition: ComponentOnceDomDefinition<TProps, THostContext, TPayload>,
+    input: ComponentOnceDomBoundaryInput<THostContext>,
+  ): ComponentOnceDomRenderInput<TProps, THostContext, TPayload>;
+  /** Validate and mount unknown boundary values using the host-wide capability policy. */
+  mountBoundary<TProps, TPayload>(
+    input: ComponentOnceBoundDomBoundaryMountInput<TProps, THostContext, TPayload>,
+  ): ComponentOnceDomMountHandle<TProps, THostContext, TPayload>;
+}
+
 /** DOM definition field that may provide a boundary validator. */
 export type ComponentOnceDomValidationField = "props" | "payload";
 
@@ -117,7 +169,7 @@ export function mountDomComponent<TProps, THostContext, TPayload>(
 ): ComponentOnceDomMountHandle<TProps, THostContext, TPayload> {
   assertComponentOnceCompatible(
     input.definition.manifest,
-    input.hostCapabilities ?? [],
+    withDomCapability(input.hostCapabilities),
     input.capabilityCompatibility,
   );
   const validation = normalizeValidation(input.validation);
@@ -162,6 +214,51 @@ export function mountDomComponentBoundary<TProps, THostContext, TPayload>(
       ? {}
       : { capabilityCompatibility: input.capabilityCompatibility }),
   });
+}
+
+/**
+ * Create the normal application-facing DOM facade.
+ *
+ * The DOM capability is supplied by this adapter itself, so callers only bind application-specific
+ * capabilities and compatibility policy once.
+ */
+export function createDomHost<THostContext>(
+  options: ComponentOnceDomHostOptions = {},
+): ComponentOnceDomHost<THostContext> {
+  const hostCapabilities = options.capabilities;
+  const capabilityCompatibility = options.capabilityCompatibility;
+  return {
+    define: <TProps, TPayload>(
+      input: DefineDomComponentInput<TProps, THostContext, TPayload>,
+    ) => defineDomComponent(input),
+    mount: <TProps, TPayload>(
+      input: ComponentOnceBoundDomMountInput<TProps, THostContext, TPayload>,
+    ) =>
+      mountDomComponent({
+        ...input,
+        ...(hostCapabilities === undefined ? {} : { hostCapabilities }),
+        ...(capabilityCompatibility === undefined ? {} : { capabilityCompatibility }),
+      }),
+    validateBoundary: <TProps, TPayload>(
+      definition: ComponentOnceDomDefinition<TProps, THostContext, TPayload>,
+      input: ComponentOnceDomBoundaryInput<THostContext>,
+    ) => validateDomComponentBoundary(definition, input),
+    mountBoundary: <TProps, TPayload>(
+      input: ComponentOnceBoundDomBoundaryMountInput<TProps, THostContext, TPayload>,
+    ) =>
+      mountDomComponentBoundary({
+        ...input,
+        ...(hostCapabilities === undefined ? {} : { hostCapabilities }),
+        ...(capabilityCompatibility === undefined ? {} : { capabilityCompatibility }),
+      }),
+  };
+}
+
+function withDomCapability(
+  available: readonly ComponentOnceCapability[] | undefined,
+): readonly ComponentOnceCapability[] {
+  const extra = (available ?? []).filter((capability) => capability.name !== DOM_CAPABILITY_NAME);
+  return [{ name: DOM_CAPABILITY_NAME, version: DOM_CAPABILITY_VERSION }, ...extra];
 }
 
 function normalizeValidation(

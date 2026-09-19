@@ -1,6 +1,8 @@
 import { ComponentOnceCapabilityVersionError } from "@componentonce/core";
 import { describe, expect, it, vi } from "vitest";
 import {
+  createDomHost,
+  createDomRequirement,
   defineDomComponent,
   mountDomComponent,
   mountDomComponentBoundary,
@@ -19,7 +21,7 @@ function definition() {
     manifest: {
       id: "example/dom-card",
       version: "1.0.0",
-      requirements: [{ name: "browser-dom", version: "1" }],
+      requirements: [createDomRequirement("1")],
     },
     implementation: {
       mount(element, input) {
@@ -58,13 +60,51 @@ describe("DOM adapter", () => {
       props: { label: "item" },
       context: { prefix: "#" },
       payload: { value: 1 },
-      hostCapabilities: [{ name: "browser-dom", version: "1" }],
     });
     expect((element as unknown as { textContent: string }).textContent).toBe("#item:1");
     mounted.update({ props: { label: "next" }, context: { prefix: "!" }, payload: { value: 2 } });
     expect((element as unknown as { textContent: string }).textContent).toBe("!next:2");
     mounted.destroy();
     expect((element as unknown as { textContent: string }).textContent).toBe("");
+  });
+
+  it("binds application capabilities once while supplying the DOM capability automatically", () => {
+    const host = createDomHost<Context>({
+      capabilities: [{ name: "example-api", version: "3" }],
+    });
+    const component = host.define<Props, Payload>({
+      manifest: {
+        id: "example/bound-dom-card",
+        version: "1.0.0",
+        requirements: [
+          createDomRequirement("1"),
+          { name: "example-api", version: "3" },
+        ],
+      },
+      implementation: {
+        mount(element, input) {
+          const node = element as unknown as { textContent: string };
+          node.textContent = input.context.prefix + input.props.label + ":" + input.payload.value;
+          return {
+            update(next) {
+              node.textContent = next.context.prefix + next.props.label + ":" + next.payload.value;
+            },
+            destroy() { node.textContent = ""; },
+          };
+        },
+      },
+    });
+    const element = target();
+    const mounted = host.mount({
+      definition: component,
+      target: element,
+      props: { label: "bound" },
+      context: { prefix: "#" },
+      payload: { value: 8 },
+    });
+
+    expect((element as unknown as { textContent: string }).textContent).toBe("#bound:8");
+    mounted.destroy();
   });
 
   it("rejects an incompatible capability before mount", () => {
@@ -84,8 +124,7 @@ describe("DOM adapter", () => {
         props: { label: "x" },
         context: { prefix: "" },
         payload: { value: 1 },
-        hostCapabilities: [{ name: "browser-dom", version: "1" }],
-      }),
+        }),
     ).toThrow(ComponentOnceCapabilityVersionError);
     expect(mount).not.toHaveBeenCalled();
   });
