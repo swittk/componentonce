@@ -2,7 +2,7 @@
   "name": "@componentonce/react",
   "version": "0.0.1",
   "type": "module",
-  "files": ["dist", "README.md"],
+  "files": ["dist", "examples", "README.md"],
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -12,8 +12,10 @@
   "dependencies": { "@componentonce/core": "workspace:*" },
   "peerDependencies": { "react": ">=18" },
   "devDependencies": {
+    "@types/react-dom": "^19.2.2",
     "@types/react": "^19.2.2",
     "react": "^19.2.0",
+    "react-dom": "^19.2.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.5"
   }
