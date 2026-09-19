@@ -87,6 +87,10 @@ React definitions and rendering using the host React singleton, boundary validat
 
 React-free ordinary DOM components with explicit `mount -> update -> destroy` lifecycle, automatic DOM capability reporting, and host-bound helpers.
 
+### `@componentonce/runtime`
+
+Browser-safe trusted package loading and execution. It parses the same self-describing package envelope emitted by compiler adapters, verifies executable bytes with Web Crypto SHA-256, and evaluates trusted bundles with an explicit host-external map. It imports no compiler or Node builtin.
+
 ### `@componentonce/compiler-esbuild`
 
 Optional trusted build tooling. It supports low-level compilation plus self-describing package helpers and the `componentonce build` CLI. Relative imports can be bundled; package/runtime imports stay explicit host externals.

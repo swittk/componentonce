@@ -102,6 +102,19 @@ importers:
         specifier: ^4.0.5
         version: 4.1.11(@types/node@24.13.6)(vite@8.3.0(@types/node@24.13.6)(esbuild@0.27.7))
 
+  packages/runtime:
+    dependencies:
+      '@componentonce/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.0.5
+        version: 4.1.11(@types/node@24.13.6)(vite@8.3.0(@types/node@24.13.6)(esbuild@0.27.7))
+
 packages:
 
   '@esbuild/aix-ppc64@0.27.7':
