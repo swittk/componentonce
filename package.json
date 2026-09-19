@@ -1,0 +1,18 @@
+{
+  "name": "componentonce",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "packageManager": "pnpm@10.20.0",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "check": "pnpm -r check",
+    "test": "pnpm -r test",
+    "build": "pnpm -r build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.5"
+  }
+}
