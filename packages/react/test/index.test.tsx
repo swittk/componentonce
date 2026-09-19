@@ -1,8 +1,10 @@
+import { ComponentOnceCapabilityVersionError } from "@componentonce/core";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
   ComponentOnceReactValidatorMissingError,
   createReactHostHelpers,
+  createReactRequirement,
   defineReactComponent,
   renderReactComponent,
   renderReactComponentBoundary,
@@ -200,4 +202,56 @@ describe("React definitions and rendering", () => {
       });
     }
   });
+
+  it("rejects a React runtime version mismatch before rendering", () => {
+    const definition = defineReactComponent<CardProps, AppContext, CardPayload>({
+      manifest: {
+        id: "example/react-19-card",
+        version: "1.0.0",
+        requirements: [createReactRequirement("19")],
+      },
+      component: () => <span>never rendered</span>,
+    });
+
+    expect(() =>
+      renderReactComponent({
+        definition,
+        props: { title: "Report" },
+        context: {
+          formatTitle: (title) => title,
+          services: { audit: () => undefined },
+        },
+        payload: { recordId: 1 },
+        hostCapabilities: [{ name: "react", version: "18" }],
+      }),
+    ).toThrow(ComponentOnceCapabilityVersionError);
+  });
+
+  it("lets a host deliberately accept a compatible React runtime range", () => {
+    const definition = defineReactComponent<CardProps, AppContext, CardPayload>({
+      manifest: {
+        id: "example/react-compatible-card",
+        version: "1.0.0",
+        requirements: [createReactRequirement("18")],
+      },
+      component: ({ props }) => <span>{props.title}</span>,
+    });
+
+    const element = renderReactComponent({
+      definition,
+      props: { title: "compatible" },
+      context: {
+        formatTitle: (title) => title,
+        services: { audit: () => undefined },
+      },
+      payload: { recordId: 1 },
+      hostCapabilities: [{ name: "react", version: "19" }],
+      capabilityCompatibility: (requirement, available) =>
+        requirement.name === available.name &&
+        Number(available.version) >= Number(requirement.version),
+    });
+
+    expect(renderToStaticMarkup(element)).toBe("<span>compatible</span>");
+  });
+
 });

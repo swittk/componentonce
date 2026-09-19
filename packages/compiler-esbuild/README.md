@@ -1,79 +1,31 @@
-# `@componentonce/compiler-esbuild`
+# @componentonce/compiler-esbuild
 
-Compile trusted internal TypeScript/TSX modules into immutable, storage-neutral CommonJS artifacts.
-React is never bundled: the host supplies its own `react`, `react/jsx-runtime`, and (when imported)
-`react/jsx-dev-runtime` module values when the artifact is instantiated. Additional host SDK modules
-use the same explicit injection mechanism.
+Optional trusted compiler/evaluator tooling for ComponentOnce.
 
-This package is for trusted code. `instantiateTrustedBundle` deliberately uses `new Function`; it is
-an evaluator with an explicit `require` map, not a security sandbox.
+This package is not part of the core runtime ABI and owns no storage or transport.
 
-## Compile, store, load, and instantiate
+## Generic modules
 
-```ts
-import * as React from "react";
-import * as jsxRuntime from "react/jsx-runtime";
-import * as ComponentOnceReact from "@componentonce/react";
-import {
-  compileTrustedReactModule,
-  instantiateTrustedBundle,
-} from "@componentonce/compiler-esbuild";
+compileTrustedModule compiles JavaScript/TypeScript into an immutable CommonJS artifact. It adds no runtime externals implicitly. Any imported host module must be declared explicitly through externalModules and injected when instantiateTrustedBundle executes the trusted artifact.
 
-const artifact = await compileTrustedReactModule({
-  source: `
-    import { useState } from "react";
-    import { defineReactComponent } from "@componentonce/react";
-    import { formatLabel } from "@my-host/sdk";
+This is suitable for ordinary DOM/HTML modules and other non-React implementations.
 
-    interface Props { readonly initial: number }
-    interface HostContext { readonly locale: string }
-    interface Payload { readonly emphasis: "normal" | "strong" }
+## React convenience
 
-    export const definition = defineReactComponent<Props, HostContext, Payload>({
-      manifest: { id: "example.counter", version: "1.0.0" },
-      component({ props, context, payload }) {
-        const [count] = useState(props.initial);
-        return <button>{formatLabel(context, count, payload)}</button>;
-      },
-    });
-  `,
-  sourceFileName: "counter.tsx",
-  additionalExternalModules: ["@componentonce/react", "@my-host/sdk"],
-});
+compileTrustedReactModule wraps the generic compiler with automatic JSX transformation and allows the React module specifiers as host externals:
 
-// Persist these values in any storage chosen by the host. The compiler performs no I/O.
-await hostBundleStore.put("example.counter@1.0.0", {
-  format: artifact.format,
-  code: artifact.code,
-  integrity: artifact.integrity,
-  metafile: artifact.metafile,
-});
+- react
+- react/jsx-runtime
+- react/jsx-dev-runtime
 
-// Later, load text or UTF-8 bytes through any host-owned adapter.
-const stored = await hostBundleStore.get("example.counter@1.0.0");
-const module = instantiateTrustedBundle<{ definition: unknown }>(stored.code, {
-  expectedIntegrity: stored.integrity,
-  externals: {
-    react: React,
-    "react/jsx-runtime": jsxRuntime,
-    "@componentonce/react": ComponentOnceReact,
-    "@my-host/sdk": hostSdk,
-  },
-});
-```
+React is still never bundled. The host injects its own React singleton at instantiation. Additional host SDK imports use additionalExternalModules.
 
-`hostBundleStore` and `hostSdk` above are application-owned adapters/values; the compiler does not
-define or access either one.
+## Artifact and trust model
 
-The compiled output is deterministic for the same source, options, and compiler version. Each
-artifact includes its UTF-8 byte length, hexadecimal SHA-256 hash, standard `sha256-...` integrity
-value, normalized warnings, exact referenced externals, and the esbuild metafile. Passing an artifact
-directly to `instantiateTrustedBundle` verifies its integrity automatically; separately loaded text or
-bytes can be checked with `expectedIntegrity` as shown above.
+Artifacts contain deterministic bundle text, byte length, SHA-256 hash/integrity, normalized diagnostics, exact referenced externals, and esbuild metafile data.
 
-Every runtime import must be either React-related or listed exactly in `additionalExternalModules`.
-Undeclared imports fail compilation instead of being resolved from the compiler process, which keeps
-storage, loading, application SDKs, and dependency selection under host control.
+instantiateTrustedBundle deliberately uses new Function with a narrow injected require map. It is for trusted internal code and is not a security sandbox.
 
-esbuild transpiles TypeScript syntax but does not type-check it. Run `tsc` (or the host project's type
-checker) separately when semantic type diagnostics are required.
+Storage is host-owned: compiled text/bytes can live in a database-backed file object, local disk, object storage, or any other adapter.
+
+esbuild transpiles TypeScript syntax but does not perform semantic type checking; hosts that need that guarantee should run their TypeScript checker separately.

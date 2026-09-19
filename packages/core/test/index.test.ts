@@ -3,11 +3,12 @@ import {
   ComponentOnceDefaultVersionNotConfiguredError,
   ComponentOnceDefinitionNotFoundError,
   ComponentOnceDuplicateVersionError,
-  ComponentOnceIncompatibleHostApiError,
+  ComponentOnceCapabilityMissingError,
+  ComponentOnceCapabilityVersionError,
   ComponentOnceLoadedDefinitionMismatchError,
   ComponentOnceRegistry,
-  assertComponentOnceHostCompatible,
-  isComponentOnceHostCompatible,
+  assertComponentOnceCompatible,
+  isComponentOnceCompatible,
   loadAndRegisterComponentOnce,
   type ComponentOnceDefinition,
   type ComponentOnceLoadDescriptor,
@@ -128,37 +129,62 @@ describe("loadAndRegisterComponentOnce", () => {
   });
 });
 
-describe("host API compatibility", () => {
+describe("host capability compatibility", () => {
   const manifest = {
     id: "example/card",
     version: "1.0.0",
-    hostApi: { name: "example-host", version: "2.3" },
+    requirements: [
+      { name: "react", version: "19" },
+      { name: "example-host", version: "2.3" },
+    ],
   } as const;
 
-  it("defaults to exact name and version matching", () => {
+  it("requires every named capability by exact version by default", () => {
     expect(
-      isComponentOnceHostCompatible(manifest, { name: "example-host", version: "2.3" }),
+      isComponentOnceCompatible(manifest, [
+        { name: "react", version: "19" },
+        { name: "example-host", version: "2.3" },
+      ]),
     ).toBe(true);
     expect(
-      isComponentOnceHostCompatible(manifest, { name: "example-host", version: "2.4" }),
+      isComponentOnceCompatible(manifest, [
+        { name: "react", version: "18" },
+        { name: "example-host", version: "2.3" },
+      ]),
     ).toBe(false);
     expect(() =>
-      assertComponentOnceHostCompatible(manifest, {
-        name: "another-host",
-        version: "2.3",
-      }),
-    ).toThrow(ComponentOnceIncompatibleHostApiError);
+      assertComponentOnceCompatible(manifest, [
+        { name: "example-host", version: "2.3" },
+      ]),
+    ).toThrow(ComponentOnceCapabilityMissingError);
+    expect(() =>
+      assertComponentOnceCompatible(manifest, [
+        { name: "react", version: "18" },
+        { name: "example-host", version: "2.3" },
+      ]),
+    ).toThrow(ComponentOnceCapabilityVersionError);
   });
 
-  it("lets a host supply its own small version rule", () => {
-    const sameMajor = (required: string, available: string) =>
-      required.split(".")[0] === available.split(".")[0];
+  it("lets the host define capability-specific compatibility", () => {
+    const compatible = (
+      required: { readonly name: string; readonly version: string },
+      available: { readonly name: string; readonly version: string },
+    ) => {
+      if (required.name !== available.name) return false;
+      if (required.name === "react") {
+        return Number(available.version) >= Number(required.version);
+      }
+      return required.version.split(".")[0] === available.version.split(".")[0];
+    };
 
     expect(
-      isComponentOnceHostCompatible(
+      isComponentOnceCompatible(
         manifest,
-        { name: "example-host", version: "2.99" },
-        sameMajor,
+        [
+          { name: "react", version: "20" },
+          { name: "example-host", version: "2.99" },
+        ],
+        compatible,
       ),
     ).toBe(true);
   });

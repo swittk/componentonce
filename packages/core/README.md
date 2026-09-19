@@ -1,72 +1,39 @@
 # @componentonce/core
 
-Framework and storage agnostic contracts for trusted, versioned ComponentOnce modules. This package has no React, compiler, transport, filesystem, database, or application dependency.
+Renderer, framework, and storage agnostic contracts for trusted versioned components.
 
 ## Definitions
 
-A definition keeps persisted props, host runtime context, and per-render payload as separate generic types. Core carries those types without interpreting their shapes.
+ComponentOnceDefinition carries four independent generic types:
 
-```ts
-import type { ComponentOnceDefinition } from "@componentonce/core";
+- implementation: opaque to core
+- Props: persisted/configured data
+- HostContext: arbitrary runtime capabilities/services owned by the host
+- Payload: arbitrary application/domain data for one invocation
 
-type Card = ComponentOnceDefinition<
-  (input: unknown) => unknown,       // implementation
-  { title: string },                // persisted Props
-  { locale: string; api: object },  // host-owned Context
-  { recordId: number }              // per-render Payload
->;
-```
+Every manifest has an exact id and version and may declare multiple requirements:
 
-`ComponentOnceManifest` gives every definition an exact `id` and `version`. It may also declare `{ name, version }` in `hostApi`.
+    requirements: [
+      { name: "react", version: "19" },
+      { name: "my-app-sdk", version: "3" }
+    ]
 
-## Isolated versioned registries
+Core does not know what those capabilities mean.
 
-```ts
-import { ComponentOnceRegistry } from "@componentonce/core";
+## Compatibility
 
-const registry = new ComponentOnceRegistry();
-registry.register(definitionV1);
-registry.register(definitionV2, { setAsDefault: true });
+Hosts provide ComponentOnceCapability records before executing an implementation.
 
-const pinned = registry.getExact("reports/card", "1.0.0");
-const selected = registry.resolve({ id: "reports/card" });
-```
+assertComponentOnceCompatible verifies every requirement. Missing capability and incompatible version are separate typed errors. Exact name/version equality is the default. A host may supply ComponentOnceCapabilityCompatibility to implement another policy, such as accepting a compatible React range or application SDK major version.
 
-Each `ComponentOnceRegistry` owns its own maps. There is no global registry. `getExact` and a versioned `resolve` never select another version. An unversioned `resolve` works only after `setDefaultVersion` or `setAsDefault`; registration never treats the newest-looking string as latest.
+Core has no semver dependency and no React-specific compatibility logic.
 
-Duplicate exact versions throw `ComponentOnceDuplicateVersionError` by default. A caller may explicitly choose `keep-existing` or `replace` through `onConflict`. `unregister` removes one exact version and clears its default selection when needed.
+## Registries
 
-## Loader adapters
+ComponentOnceRegistry instances are isolated. Exact id/version lookup is deterministic. Hosts may explicitly configure a default version, but registration never guesses that a newest-looking string should win.
 
-Core describes a loader but performs no I/O. Extend `ComponentOnceLoadDescriptor` with fields owned by the adapter:
+Duplicate exact versions throw by default; callers may explicitly keep the existing definition or replace it.
 
-```ts
-import {
-  ComponentOnceRegistry,
-  loadAndRegisterComponentOnce,
-  type ComponentOnceLoadDescriptor,
-  type ComponentOnceLoader,
-} from "@componentonce/core";
+## Loaders
 
-interface ModuleDescriptor extends ComponentOnceLoadDescriptor {
-  moduleToken: string;
-}
-
-const loader: ComponentOnceLoader<MyDefinition, ModuleDescriptor> = {
-  async load(descriptor) {
-    return importTrustedModule(descriptor.moduleToken);
-  },
-};
-
-const definition = await loadAndRegisterComponentOnce(
-  new ComponentOnceRegistry<MyDefinition>(),
-  loader,
-  { id: "reports/card", version: "1.4.2", moduleToken: "internal:reports/card@1.4.2" },
-);
-```
-
-`loadAndRegisterComponentOnce` verifies that the loaded manifest exactly matches the requested id and version before registration.
-
-## Host API compatibility
-
-`isComponentOnceHostCompatible` and `assertComponentOnceHostCompatible` use exact API name and version equality by default. A host can pass a small version comparison function when it follows another version policy; core has no semver dependency.
+ComponentOnceLoader is an I/O-free adapter contract. Storage and transport implementations extend ComponentOnceLoadDescriptor with their own data. loadAndRegisterComponentOnce verifies that a loader returned the exact id/version requested before registration.

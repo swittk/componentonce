@@ -10,6 +10,7 @@ import {
   ComponentOnceIntegrityError,
   ComponentOnceMissingExternalError,
   calculateTrustedBundleIntegrity,
+  compileTrustedModule,
   compileTrustedReactModule,
   instantiateTrustedBundle,
 } from "../src/index.js";
@@ -188,6 +189,28 @@ describe("compileTrustedReactModule", () => {
         }),
       ],
     });
+  });
+
+
+  it("compiles and instantiates a plain trusted module without implicit React externals", async () => {
+    const artifact = await compileTrustedModule({
+      source: `
+        export function mount(target: { textContent: string }, value: string) {
+          target.textContent = value;
+        }
+      `,
+      sourceFileName: "plain-dom.ts",
+    });
+
+    expect(artifact.externalModules).toEqual([]);
+    expect(artifact.code).not.toContain('require("react")');
+
+    const loaded = instantiateTrustedBundle<{
+      readonly mount: (target: { textContent: string }, value: string) => void;
+    }>(artifact, { externals: {} });
+    const target = { textContent: "" };
+    loaded.mount(target, "plain");
+    expect(target.textContent).toBe("plain");
   });
 
   it("checks stored bundle integrity before executing code", async () => {

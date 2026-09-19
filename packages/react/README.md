@@ -1,72 +1,23 @@
 # @componentonce/react
 
-React integration for trusted ComponentOnce modules. React is a peer dependency, so dynamically loaded modules render with the host application's React instance.
+React adapter for trusted ComponentOnce modules.
+
+React is a peer dependency. Dynamically compiled modules must use the host application's actual React and JSX-runtime instances rather than bundling another React copy.
 
 ## Define and render
 
-```tsx
-import {
-  defineReactComponent,
-  renderReactComponent,
-} from "@componentonce/react";
+defineReactComponent<Props, HostContext, Payload> keeps persisted props, arbitrary host context, and per-render payload distinct.
 
-interface Props { title: string }
-interface HostContext { format: (value: string) => string; services: object }
-interface Payload { recordId: number }
+Typed rendering does not revalidate values by default. Raw JSON/editor/storage boundaries can use validateReactComponentBoundary or renderReactComponentBoundary to validate props and payload once.
 
-const card = defineReactComponent<Props, HostContext, Payload>({
-  manifest: { id: "reports/card", version: "1.0.0" },
-  component: ({ props, context, payload }) => (
-    <article data-record={payload.recordId}>{context.format(props.title)}</article>
-  ),
-});
+## React runtime compatibility
 
-const element = renderReactComponent({
-  definition: card,
-  props: { title: "Quarterly report" },
-  context: appRuntime,
-  payload: { recordId: 42 },
-});
-```
+createReactRequirement(version) creates the generic core requirement named react.
 
-The renderer receives an exact definition and the three separate values. It makes no assumptions about Context or Payload.
+When a definition declares requirements, renderReactComponent checks them against hostCapabilities before calling React createElement. Exact compatibility is the default. The host may supply capabilityCompatibility when it deliberately supports a version range.
 
-## Boundary validation
-
-Typed rendering does not run validators by default. A host can explicitly request validation for trusted typed values:
-
-```tsx
-renderReactComponent({
-  definition: card,
-  props,
-  context,
-  payload,
-  validation: { props: true, payload: true },
-});
-```
-
-For raw values from JSON, editor state, or another untyped boundary, validate once and then render:
-
-```tsx
-const input = validateReactComponentBoundary(card, {
-  props: rawProps,
-  context: appRuntime,
-  payload: rawPayload,
-});
-
-const element = renderReactComponent({ definition: card, ...input });
-```
-
-`renderReactComponentBoundary` provides the combined form. Boundary helpers require both validators and throw `ComponentOnceReactValidatorMissingError` when one is absent. Context is host-owned and passes through unchanged.
+This matters because sharing the host React singleton prevents duplicate-React hook failures, but it does not make a React-19-authored module compatible with a React-18 host automatically.
 
 ## Host-specific helpers
 
-`createReactHostHelpers<HostContext, Payload>()` fixes an application's context and payload types while leaving each component's props type to be inferred:
-
-```tsx
-const components = createReactHostHelpers<AppRuntime, SelectionPayload>();
-const card = components.define<CardProps>({ manifest, component: Card });
-const element = components.render({ definition: card, props, context, payload });
-```
-
-See [`examples/two-hosts.tsx`](./examples/two-hosts.tsx) for one exact React definition rendered with two unrelated host context and payload shapes.
+createReactHostHelpers<HostContext, Payload>() fixes application context/payload types without importing application code into ComponentOnce. Each component still chooses its own Props type.

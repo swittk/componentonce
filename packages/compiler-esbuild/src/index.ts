@@ -11,22 +11,37 @@ import {
 /** Stable identifier for the trusted CommonJS bundle contract emitted by this package. */
 export const COMPONENTONCE_TRUSTED_BUNDLE_FORMAT = "componentonce.trusted-cjs.v1" as const;
 
-const DEFAULT_SOURCE_FILE_NAME = "componentonce-module.tsx";
+const DEFAULT_SOURCE_FILE_NAME = "componentonce-module.ts";
+const DEFAULT_REACT_SOURCE_FILE_NAME = "componentonce-module.tsx";
 const DEFAULT_EVALUATED_SOURCE_NAME = "componentonce-trusted-bundle.js";
 const REACT_EXTERNALS = ["react", "react/jsx-runtime", "react/jsx-dev-runtime"] as const;
 
-/** Source syntaxes accepted by the trusted React module compiler. */
+/** Source syntaxes accepted by the trusted compiler. */
 export type ComponentOnceSourceLoader = "js" | "jsx" | "ts" | "tsx";
 
-/** Input for compiling one self-contained trusted React module. */
+/** JSX transform mode forwarded to esbuild by the generic compiler. */
+export type ComponentOnceJsxMode = "transform" | "preserve" | "automatic";
+
+/** Input for compiling one trusted JavaScript or TypeScript module. */
 export interface ComponentOnceCompileInput {
   /** TypeScript, TSX, JavaScript, or JSX module source. */
   readonly source: string;
-  /** Stable diagnostic/source-map name; defaults to `componentonce-module.tsx`. */
+  /** Stable diagnostic/source-map name. */
   readonly sourceFileName?: string;
-  /** Explicit source syntax, otherwise inferred from `sourceFileName` and defaulting to TSX. */
+  /** Explicit source syntax, otherwise inferred from sourceFileName. */
   readonly loader?: ComponentOnceSourceLoader;
-  /** Exact additional import specifiers that the host will inject during instantiation. */
+  /** Exact import specifiers the host will inject during instantiation. */
+  readonly externalModules?: readonly string[];
+  /** JSX transform mode; generic compilation defaults to transform. */
+  readonly jsx?: ComponentOnceJsxMode;
+}
+
+/** React convenience compiler input; React externals are supplied by the wrapper. */
+export interface ComponentOnceReactCompileInput {
+  readonly source: string;
+  readonly sourceFileName?: string;
+  readonly loader?: ComponentOnceSourceLoader;
+  /** Additional non-React host externals. */
   readonly additionalExternalModules?: readonly string[];
 }
 
@@ -67,7 +82,7 @@ export interface ComponentOnceDiagnostic {
 /** Read-only esbuild metadata describing the emitted bundle and its external imports. */
 export type ComponentOnceBundleMetafile = Readonly<Metafile>;
 
-/** Immutable, storage-neutral output of the trusted React module compiler. */
+/** Immutable, storage-neutral output of the trusted module compiler. */
 export interface ComponentOnceTrustedBundleArtifact {
   /** Bundle contract understood by `instantiateTrustedBundle`. */
   readonly format: typeof COMPONENTONCE_TRUSTED_BUNDLE_FORMAT;
@@ -153,24 +168,24 @@ export class ComponentOnceIntegrityError extends Error {
 }
 
 /**
- * Compile one trusted TS/TSX module into a deterministic CommonJS artifact.
+ * Compile one trusted module into a deterministic CommonJS artifact.
  *
- * React, both React JSX runtimes, and caller-declared modules remain external. Every runtime import
- * must be injected explicitly by the host; this compiler never resolves or bundles dependencies.
+ * Only caller-declared imports remain external. This generic path does not add React or any other
+ * runtime implicitly; every external must be injected explicitly by the host at instantiation.
  */
-export async function compileTrustedReactModule(
+export async function compileTrustedModule(
   input: ComponentOnceCompileInput,
 ): Promise<ComponentOnceTrustedBundleArtifact> {
   const sourceFileName = input.sourceFileName ?? DEFAULT_SOURCE_FILE_NAME;
   const loader = input.loader ?? inferLoader(sourceFileName);
-  const allowedExternals = normalizeAllowedExternals(input.additionalExternalModules ?? []);
+  const allowedExternals = normalizeAllowedExternals(input.externalModules ?? []);
 
   try {
     const result = await build({
       bundle: true,
       charset: "utf8",
       format: "cjs",
-      jsx: "automatic",
+      jsx: input.jsx ?? "transform",
       legalComments: "none",
       logLevel: "silent",
       metafile: true,
@@ -215,9 +230,7 @@ export async function compileTrustedReactModule(
       metafile,
     });
   } catch (error: unknown) {
-    if (error instanceof ComponentOnceCompileError) {
-      throw error;
-    }
+    if (error instanceof ComponentOnceCompileError) throw error;
     if (isBuildFailure(error)) {
       throw new ComponentOnceCompileError(
         error.errors.map((message) => normalizeMessage("error", message)),
@@ -225,6 +238,22 @@ export async function compileTrustedReactModule(
     }
     throw error;
   }
+}
+
+/** Compile a trusted React module while keeping the host React singleton external. */
+export function compileTrustedReactModule(
+  input: ComponentOnceReactCompileInput,
+): Promise<ComponentOnceTrustedBundleArtifact> {
+  return compileTrustedModule({
+    source: input.source,
+    sourceFileName: input.sourceFileName ?? DEFAULT_REACT_SOURCE_FILE_NAME,
+    ...(input.loader === undefined ? {} : { loader: input.loader }),
+    externalModules: [
+      ...REACT_EXTERNALS,
+      ...(input.additionalExternalModules ?? []),
+    ],
+    jsx: "automatic",
+  });
 }
 
 /** Calculate a subresource-integrity-style SHA-256 value for bundle text or UTF-8 bytes. */
@@ -301,7 +330,7 @@ function createHostExternalPlugin(allowedExternals: ReadonlySet<string>): Plugin
             {
               text:
                 `Import "${args.path}" is not an allowed host external. ` +
-                "Add its exact specifier to additionalExternalModules.",
+                "Add its exact specifier to externalModules (or additionalExternalModules for the React helper).",
             },
           ],
         };
@@ -311,7 +340,7 @@ function createHostExternalPlugin(allowedExternals: ReadonlySet<string>): Plugin
 }
 
 function normalizeAllowedExternals(additionalExternals: readonly string[]): ReadonlySet<string> {
-  const externals = new Set<string>(REACT_EXTERNALS);
+  const externals = new Set<string>();
   for (const specifier of additionalExternals) {
     if (
       specifier.length === 0 ||
