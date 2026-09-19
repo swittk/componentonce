@@ -3,7 +3,16 @@
   "compilerOptions": {
     "noEmit": true,
     "rootDir": ".",
-    "types": ["vitest/globals"]
+    "types": ["vitest/globals"],
+    "baseUrl": ".",
+    "paths": { "@componentonce/react": ["./src/index.tsx"] }
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "test/**/*.tsx"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "test/**/*.ts",
+    "test/**/*.tsx",
+    "examples/**/*.ts",
+    "examples/**/*.tsx"
+  ]
 }

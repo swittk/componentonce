@@ -1,4 +1,4 @@
-import type { ComponentType } from "react";
+import { createElement, type ComponentType, type ReactElement } from "react";
 import type {
   ComponentOnceDefinition,
   ComponentOnceManifest,
@@ -16,22 +16,194 @@ export interface ComponentOnceReactRenderInput<TProps, THostContext, TPayload> {
 export type ComponentOnceReactComponent<TProps, THostContext, TPayload> =
   ComponentType<ComponentOnceReactRenderInput<TProps, THostContext, TPayload>>;
 
-/** Define one typed React component without teaching core anything about React. */
-export function defineReactComponent<TProps, THostContext, TPayload>(input: {
+/** A core definition whose implementation is a typed React component. */
+export type ComponentOnceReactDefinition<TProps, THostContext, TPayload> =
+  ComponentOnceDefinition<
+    ComponentOnceReactComponent<TProps, THostContext, TPayload>,
+    TProps,
+    THostContext,
+    TPayload
+  >;
+
+/** Input used to define one typed React component. */
+export interface DefineReactComponentInput<TProps, THostContext, TPayload> {
   readonly manifest: ComponentOnceManifest;
   readonly component: ComponentOnceReactComponent<TProps, THostContext, TPayload>;
   readonly validateProps?: ComponentOnceValidator<TProps>;
   readonly validatePayload?: ComponentOnceValidator<TPayload>;
-}): ComponentOnceDefinition<
-  ComponentOnceReactComponent<TProps, THostContext, TPayload>,
-  TProps,
-  THostContext,
-  TPayload
-> {
+}
+
+/** Selects typed values that the renderer should explicitly revalidate. */
+export interface ComponentOnceReactValidationRequest {
+  readonly props?: boolean;
+  readonly payload?: boolean;
+}
+
+/** Input used to render an already typed exact React definition. */
+export interface ComponentOnceReactRendererInput<TProps, THostContext, TPayload>
+  extends ComponentOnceReactRenderInput<TProps, THostContext, TPayload> {
+  readonly definition: ComponentOnceReactDefinition<TProps, THostContext, TPayload>;
+  /** Validation is off by default; `true` requests both validators. */
+  readonly validation?: boolean | ComponentOnceReactValidationRequest;
+}
+
+/** Unknown props and payload received at an untyped host boundary. */
+export interface ComponentOnceReactBoundaryInput<THostContext> {
+  readonly props: unknown;
+  readonly context: THostContext;
+  readonly payload: unknown;
+}
+
+/** The definition and raw values needed to validate an untyped render boundary. */
+export interface ComponentOnceReactBoundaryRenderInput<TProps, THostContext, TPayload>
+  extends ComponentOnceReactBoundaryInput<THostContext> {
+  readonly definition: ComponentOnceReactDefinition<TProps, THostContext, TPayload>;
+}
+
+/** A definition field that can carry an optional boundary validator. */
+export type ComponentOnceReactValidationField = "props" | "payload";
+
+/** Thrown when a caller requests boundary validation that a definition does not provide. */
+export class ComponentOnceReactValidatorMissingError extends Error {
+  public readonly field: ComponentOnceReactValidationField;
+  public readonly manifest: ComponentOnceManifest;
+
+  public constructor(
+    field: ComponentOnceReactValidationField,
+    manifest: ComponentOnceManifest,
+  ) {
+    super(
+      `Component "${manifest.id}" version "${manifest.version}" has no ${field} validator.`,
+    );
+    this.name = new.target.name;
+    this.field = field;
+    this.manifest = manifest;
+  }
+}
+
+/** Helpers with host context and payload types fixed for one application integration. */
+export interface ComponentOnceReactHostHelpers<THostContext, TPayload> {
+  /** Define a component while inferring only its persisted props type. */
+  define<TProps>(
+    input: DefineReactComponentInput<TProps, THostContext, TPayload>,
+  ): ComponentOnceReactDefinition<TProps, THostContext, TPayload>;
+  /** Render typed values without validation unless the request explicitly enables it. */
+  render<TProps>(
+    input: ComponentOnceReactRendererInput<TProps, THostContext, TPayload>,
+  ): ReactElement;
+  /** Validate unknown props and payload once and preserve the host context unchanged. */
+  validateBoundary<TProps>(
+    definition: ComponentOnceReactDefinition<TProps, THostContext, TPayload>,
+    input: ComponentOnceReactBoundaryInput<THostContext>,
+  ): ComponentOnceReactRenderInput<TProps, THostContext, TPayload>;
+  /** Validate and render values received from an untyped boundary. */
+  renderBoundary<TProps>(
+    input: ComponentOnceReactBoundaryRenderInput<TProps, THostContext, TPayload>,
+  ): ReactElement;
+}
+
+/** Define one typed React component without teaching core anything about React. */
+export function defineReactComponent<TProps, THostContext, TPayload>(
+  input: DefineReactComponentInput<TProps, THostContext, TPayload>,
+): ComponentOnceReactDefinition<TProps, THostContext, TPayload> {
   return {
     manifest: input.manifest,
     implementation: input.component,
     ...(input.validateProps === undefined ? {} : { validateProps: input.validateProps }),
     ...(input.validatePayload === undefined ? {} : { validatePayload: input.validatePayload }),
   };
+}
+
+/** Render an exact React definition, with optional validation requested by the host. */
+export function renderReactComponent<TProps, THostContext, TPayload>(
+  input: ComponentOnceReactRendererInput<TProps, THostContext, TPayload>,
+): ReactElement {
+  const validation = normalizeValidation(input.validation);
+  const props = validation.props
+    ? validateField(input.definition, "props", input.props)
+    : input.props;
+  const payload = validation.payload
+    ? validateField(input.definition, "payload", input.payload)
+    : input.payload;
+
+  return createElement(input.definition.implementation, {
+    props,
+    context: input.context,
+    payload,
+  });
+}
+
+/** Validate unknown props and payload once at a host boundary. */
+export function validateReactComponentBoundary<TProps, THostContext, TPayload>(
+  definition: ComponentOnceReactDefinition<TProps, THostContext, TPayload>,
+  input: ComponentOnceReactBoundaryInput<THostContext>,
+): ComponentOnceReactRenderInput<TProps, THostContext, TPayload> {
+  return {
+    props: validateField(definition, "props", input.props),
+    context: input.context,
+    payload: validateField(definition, "payload", input.payload),
+  };
+}
+
+/** Validate unknown boundary values and render the resulting typed React input. */
+export function renderReactComponentBoundary<TProps, THostContext, TPayload>(
+  input: ComponentOnceReactBoundaryRenderInput<TProps, THostContext, TPayload>,
+): ReactElement {
+  const validated = validateReactComponentBoundary(input.definition, input);
+  return renderReactComponent({ definition: input.definition, ...validated });
+}
+
+/** Create concise definition and rendering helpers pinned to one host's own types. */
+export function createReactHostHelpers<THostContext, TPayload>(): ComponentOnceReactHostHelpers<
+  THostContext,
+  TPayload
+> {
+  return {
+    define: <TProps,>(input: DefineReactComponentInput<TProps, THostContext, TPayload>) =>
+      defineReactComponent(input),
+    render: <TProps,>(input: ComponentOnceReactRendererInput<TProps, THostContext, TPayload>) =>
+      renderReactComponent(input),
+    validateBoundary: <TProps,>(
+      definition: ComponentOnceReactDefinition<TProps, THostContext, TPayload>,
+      input: ComponentOnceReactBoundaryInput<THostContext>,
+    ) => validateReactComponentBoundary(definition, input),
+    renderBoundary: <TProps,>(
+      input: ComponentOnceReactBoundaryRenderInput<TProps, THostContext, TPayload>,
+    ) => renderReactComponentBoundary(input),
+  };
+}
+
+function normalizeValidation(
+  validation: boolean | ComponentOnceReactValidationRequest | undefined,
+): Required<ComponentOnceReactValidationRequest> {
+  if (validation === true) return { props: true, payload: true };
+  if (validation === false || validation === undefined) {
+    return { props: false, payload: false };
+  }
+  return {
+    props: validation.props ?? false,
+    payload: validation.payload ?? false,
+  };
+}
+
+function validateField<TProps, THostContext, TPayload>(
+  definition: ComponentOnceReactDefinition<TProps, THostContext, TPayload>,
+  field: "props",
+  value: unknown,
+): TProps;
+function validateField<TProps, THostContext, TPayload>(
+  definition: ComponentOnceReactDefinition<TProps, THostContext, TPayload>,
+  field: "payload",
+  value: unknown,
+): TPayload;
+function validateField<TProps, THostContext, TPayload>(
+  definition: ComponentOnceReactDefinition<TProps, THostContext, TPayload>,
+  field: ComponentOnceReactValidationField,
+  value: unknown,
+): TProps | TPayload {
+  const validator = field === "props" ? definition.validateProps : definition.validatePayload;
+  if (validator === undefined) {
+    throw new ComponentOnceReactValidatorMissingError(field, definition.manifest);
+  }
+  return validator(value);
 }
