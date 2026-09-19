@@ -2,15 +2,31 @@
   "name": "@componentonce/react",
   "version": "0.0.1",
   "type": "module",
-  "files": ["dist", "examples", "README.md"],
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
-  "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
-    "test": "vitest run"
+  "files": [
+    "dist",
+    "examples",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
-  "dependencies": { "@componentonce/core": "workspace:*" },
-  "peerDependencies": { "react": ">=18" },
+  "scripts": {
+    "precheck": "pnpm --filter @componentonce/core build",
+    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "pretest": "pnpm --filter @componentonce/core build",
+    "test": "vitest run",
+    "prebuild": "pnpm --filter @componentonce/core build",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@componentonce/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
   "devDependencies": {
     "@types/react-dom": "^19.2.2",
     "@types/react": "^19.2.2",
