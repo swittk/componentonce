@@ -87,7 +87,7 @@ export interface ComponentOnceCompiledAsset {
 export interface ComponentOnceCompileInput {
   /** TypeScript, TSX, JavaScript, or JSX module source. */
   readonly source: string;
-  /** Stable diagnostic/source-map name. */
+  /** Stable diagnostic/source-map name; absolute inputs are reduced to their basename. */
   readonly sourceFileName?: string;
   /** Explicit source syntax, otherwise inferred from sourceFileName. */
   readonly loader?: ComponentOnceSourceLoader;
@@ -257,10 +257,13 @@ export class ComponentOnceIntegrityError extends Error {
 export async function compileTrustedModule(
   input: ComponentOnceCompileInput,
 ): Promise<ComponentOnceTrustedBundleArtifact> {
-  const sourceFileName = input.sourceFileName ?? DEFAULT_SOURCE_FILE_NAME;
+  const sourceFileName = normalizeSourceFileName(
+    input.sourceFileName ?? DEFAULT_SOURCE_FILE_NAME,
+  );
   const loader = input.loader ?? inferLoader(sourceFileName);
   const allowedExternals = normalizeAllowedExternals(input.externalModules ?? []);
-  const outputDirectory = resolve(input.resolveDir ?? process.cwd(), OUTPUT_DIRECTORY_NAME);
+  const workingDirectory = resolve(input.resolveDir ?? process.cwd());
+  const outputDirectory = resolve(workingDirectory, OUTPUT_DIRECTORY_NAME);
   const loaders = normalizeLoaders(input.loaders);
   const contentTypes = normalizeContentTypes(input.contentTypes);
 
@@ -269,13 +272,14 @@ export async function compileTrustedModule(
       source: input.source,
       sourceFileName,
       loader,
-      ...(input.resolveDir === undefined ? {} : { resolveDir: input.resolveDir }),
+      resolveDir: workingDirectory,
       jsx: input.jsx ?? "transform",
       loaders,
       allowedExternals,
       outputDirectory,
     });
     const result = await build({
+      absWorkingDir: workingDirectory,
       assetNames: "assets/[hash]",
       bundle: true,
       charset: "utf8",
@@ -290,7 +294,7 @@ export async function compileTrustedModule(
       outdir: outputDirectory,
       platform: "neutral",
       plugins: [
-        createCssModuleNamespacePlugin(compilationNamespace),
+        createCssModuleNamespacePlugin(compilationNamespace, workingDirectory),
         createHostExternalPlugin(allowedExternals),
       ],
       publicPath: COMPONENTONCE_ASSET_URL_PREFIX,
@@ -300,7 +304,7 @@ export async function compileTrustedModule(
         contents: input.source,
         loader: loader as Loader,
         sourcefile: sourceFileName,
-        ...(input.resolveDir === undefined ? {} : { resolveDir: input.resolveDir }),
+        resolveDir: workingDirectory,
       },
       target: "es2022",
       treeShaking: true,
@@ -316,6 +320,7 @@ export async function compileTrustedModule(
     const outputs = classifyOutputs(
       result.outputFiles,
       outputDirectory,
+      workingDirectory,
       contentTypes,
       result.metafile,
     );
@@ -433,6 +438,7 @@ export function instantiateTrustedBundle<TExports = Record<string, unknown>>(
 function classifyOutputs(
   outputFiles: readonly OutputFile[],
   outputDirectory: string,
+  workingDirectory: string,
   contentTypes: Readonly<Record<string, string>>,
   metafile: Metafile,
 ): {
@@ -451,11 +457,11 @@ function classifyOutputs(
       createInternalDiagnostic("esbuild metafile does not identify the JavaScript entry output."),
     ]);
   }
-  const entryOutput = findOutputFile(outputFiles, entryMetadata[0]);
+  const entryOutput = findOutputFile(outputFiles, entryMetadata[0], workingDirectory);
   const stylesheetOutput =
     entryMetadata[1].cssBundle === undefined
       ? undefined
-      : findOutputFile(outputFiles, entryMetadata[1].cssBundle);
+      : findOutputFile(outputFiles, entryMetadata[1].cssBundle, workingDirectory);
   if (entryOutput === undefined || (entryMetadata[1].cssBundle !== undefined && stylesheetOutput === undefined)) {
     throw new ComponentOnceCompileError([
       createInternalDiagnostic("esbuild metafile references an output file that was not returned."),
@@ -494,8 +500,8 @@ function classifyOutputs(
       createInternalDiagnostic("esbuild did not emit the expected component.js entry bundle."),
     ]);
   }
-  assets.sort((left, right) => left.path.localeCompare(right.path));
-  stylesheets.sort();
+  assets.sort((left, right) => compareStrings(left.path, right.path));
+  stylesheets.sort(compareStrings);
   return {
     code,
     assets: Object.freeze(assets),
@@ -506,14 +512,12 @@ function classifyOutputs(
 function findOutputFile(
   outputFiles: readonly OutputFile[],
   metadataPath: string,
+  workingDirectory: string,
 ): OutputFile | undefined {
-  const normalizedMetadataPath = metadataPath.replace(/\\/gu, "/");
+  const normalizedMetadataPath = resolve(workingDirectory, metadataPath).replace(/\\/gu, "/");
   return outputFiles.find((output) => {
     const normalizedOutputPath = output.path.replace(/\\/gu, "/");
-    return (
-      normalizedOutputPath === normalizedMetadataPath ||
-      normalizedOutputPath.endsWith("/" + normalizedMetadataPath)
-    );
+    return normalizedOutputPath === normalizedMetadataPath;
   });
 }
 
@@ -561,7 +565,11 @@ function normalizeContentTypes(
         createInternalDiagnostic("Invalid content type extension: " + JSON.stringify(extension) + "."),
       ]);
     }
-    if (contentType.trim() === "" || /[\0\r\n]/u.test(contentType)) {
+    if (
+      contentType.trim() === "" ||
+      contentType !== contentType.trim() ||
+      /[\u0000-\u001f\u007f]/u.test(contentType)
+    ) {
       throw new ComponentOnceCompileError([
         createInternalDiagnostic("Invalid content type: " + JSON.stringify(contentType) + "."),
       ]);
@@ -612,7 +620,9 @@ interface CompilationNamespaceInput {
 async function calculateCompilationNamespace(
   input: CompilationNamespaceInput,
 ): Promise<string> {
+  const root = resolve(input.resolveDir ?? process.cwd());
   const result = await build({
+    absWorkingDir: root,
     assetNames: "assets/[hash]",
     bundle: true,
     entryNames: "component",
@@ -631,7 +641,7 @@ async function calculateCompilationNamespace(
       contents: input.source,
       loader: input.loader as Loader,
       sourcefile: input.sourceFileName,
-      ...(input.resolveDir === undefined ? {} : { resolveDir: input.resolveDir }),
+      resolveDir: root,
     },
     target: "es2022",
     treeShaking: true,
@@ -643,21 +653,23 @@ async function calculateCompilationNamespace(
     ]);
   }
 
-  const root = input.resolveDir ?? process.cwd();
   const virtualEntryPath = resolve(root, input.sourceFileName);
   const hash = createHash("sha256");
   updateNamespacedHash(hash, "entry/" + basename(input.sourceFileName), Buffer.from(input.source));
   const dependencyFiles = Object.keys(result.metafile.inputs)
     .flatMap((inputPath) => {
       if (inputPath === input.sourceFileName || inputPath === "<stdin>") return [];
-      const absolutePath = isAbsolute(inputPath) ? inputPath : resolve(process.cwd(), inputPath);
+      const dependencyPath = splitPathSuffix(inputPath).path;
+      const absolutePath = isAbsolute(dependencyPath)
+        ? dependencyPath
+        : resolve(root, dependencyPath);
       if (absolutePath === virtualEntryPath) return [];
       return [{
         absolutePath,
         stablePath: relative(root, absolutePath).replace(/\\/gu, "/"),
       }];
     })
-    .sort((left, right) => left.stablePath.localeCompare(right.stablePath));
+    .sort((left, right) => compareStrings(left.stablePath, right.stablePath));
   for (const dependency of dependencyFiles) {
     updateNamespacedHash(
       hash,
@@ -677,35 +689,52 @@ function updateNamespacedHash(
   hash.update(String(contents.byteLength)).update(":").update(contents);
 }
 
-function createCssModuleNamespacePlugin(compilationNamespace: string): Plugin {
+function createCssModuleNamespacePlugin(
+  compilationNamespace: string,
+  workingDirectory: string,
+): Plugin {
   const namespace = "componentonce-local-css";
   return {
     name: "componentonce-css-module-namespace",
     setup(buildApi) {
-      const resolveModule = async (path: string, resolveDir: string) => {
+      const resolveModule = async (path: string, resolveDir: string, suffix = "") => {
         const realPath = isAbsolute(path) ? path : resolve(resolveDir, path);
         const contents = await readFile(realPath);
         const contentNamespace = createHash("sha256").update(contents).digest("hex").slice(0, 12);
+        const stablePath = relative(workingDirectory, realPath).replace(/\\/gu, "/");
+        const pathNamespace = createHash("sha256").update(stablePath).digest("hex").slice(0, 12);
         const originalName = basename(realPath, ".module.css");
         return {
-          path: resolve(
-            dirname(realPath),
-            originalName + "-" + compilationNamespace + "-" + contentNamespace + ".module.css",
-          ),
+          path:
+            originalName +
+            "-" +
+            pathNamespace +
+            "-" +
+            compilationNamespace +
+            "-" +
+            contentNamespace +
+            ".module.css",
           namespace,
+          suffix,
           pluginData: { realPath },
         };
       };
 
-      buildApi.onResolve({ filter: /\.module\.css$/ }, (args) =>
-        resolveModule(args.path, args.resolveDir),
-      );
+      buildApi.onResolve({ filter: /\.module\.css(?:[?#].*)?$/ }, (args) => {
+        const reference = splitPathSuffix(args.path);
+        if (!reference.path.startsWith(".")) return undefined;
+        return resolveModule(reference.path, args.resolveDir, reference.suffix);
+      });
       buildApi.onResolve({ filter: /.*/, namespace }, (args) => {
-        if (args.path.endsWith(".module.css")) {
-          return resolveModule(args.path, args.resolveDir);
+        const reference = splitPathSuffix(args.path);
+        if (isCssReferenceKind(args.kind) && isNonFileCssPath(reference.path)) {
+          return resolveCssReference(reference.path, reference.suffix, args.resolveDir);
         }
-        if (args.path.startsWith(".") || isAbsolute(args.path)) {
-          return { path: isAbsolute(args.path) ? args.path : resolve(args.resolveDir, args.path) };
+        if (reference.path.endsWith(".module.css")) {
+          return resolveModule(reference.path, args.resolveDir, reference.suffix);
+        }
+        if (isCssReferenceKind(args.kind)) {
+          return resolveCssReference(reference.path, reference.suffix, args.resolveDir);
         }
         return undefined;
       });
@@ -729,10 +758,14 @@ function createHostExternalPlugin(allowedExternals: ReadonlySet<string>): Plugin
     name: "componentonce-host-externals",
     setup(buildApi) {
       buildApi.onResolve({ filter: /.*/ }, (args) => {
+        if (isCssReferenceKind(args.kind)) {
+          const reference = splitPathSuffix(args.path);
+          return resolveCssReference(reference.path, reference.suffix, args.resolveDir);
+        }
         if (allowedExternals.has(args.path)) {
           return { external: true, path: args.path };
         }
-        if (args.path.startsWith(".") || isAbsolute(args.path)) {
+        if (args.path.startsWith(".")) {
           return undefined;
         }
         return {
@@ -747,6 +780,52 @@ function createHostExternalPlugin(allowedExternals: ReadonlySet<string>): Plugin
       });
     },
   };
+}
+
+function isCssReferenceKind(kind: string): boolean {
+  return kind === "import-rule" || kind === "composes-from" || kind === "url-token";
+}
+
+function splitPathSuffix(value: string): { readonly path: string; readonly suffix: string } {
+  const suffixIndex = value.search(/[?#]/u);
+  return suffixIndex < 0
+    ? { path: value, suffix: "" }
+    : { path: value.slice(0, suffixIndex), suffix: value.slice(suffixIndex) };
+}
+
+function resolveCssReference(
+  path: string,
+  suffix: string,
+  resolveDir: string,
+) {
+  if (path === "" || /^data:/iu.test(path)) {
+    return { path: path + suffix, external: true };
+  }
+  if (isNonFileCssPath(path)) {
+    return {
+      errors: [
+        {
+          text:
+            "CSS asset reference " +
+            JSON.stringify(path + suffix) +
+            " is not portable. Use a relative packaged file or an explicit data URL.",
+        },
+      ],
+    };
+  }
+  return {
+    path: resolve(resolveDir, path),
+    ...(suffix === "" ? {} : { suffix }),
+  };
+}
+
+function isNonFileCssPath(path: string): boolean {
+  return (
+    path === "" ||
+    path.startsWith("/") ||
+    path.includes("\\") ||
+    /^[A-Za-z][A-Za-z0-9+.-]*:/u.test(path)
+  );
 }
 
 function normalizeAllowedExternals(additionalExternals: readonly string[]): ReadonlySet<string> {
@@ -780,6 +859,24 @@ function inferLoader(sourceFileName: string): ComponentOnceSourceLoader {
     return "ts";
   }
   return "tsx";
+}
+
+function normalizeSourceFileName(sourceFileName: string): string {
+  const normalized = sourceFileName.replace(/\\/gu, "/");
+  if (
+    isAbsolute(sourceFileName) ||
+    normalized.startsWith("/") ||
+    /^[A-Za-z]:\//u.test(normalized)
+  ) {
+    const fileName = normalized.slice(normalized.lastIndexOf("/") + 1);
+    if (fileName === "") {
+      throw new ComponentOnceCompileError([
+        createInternalDiagnostic("sourceFileName must identify a file."),
+      ]);
+    }
+    return fileName;
+  }
+  return normalized;
 }
 
 function normalizeMessage(
@@ -882,4 +979,8 @@ function deepFreeze<T>(value: T): T {
     Object.freeze(value);
   }
   return value;
+}
+
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }

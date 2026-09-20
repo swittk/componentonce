@@ -82,6 +82,8 @@ blobs.dispose();
 
 Calling `mountStyles` repeatedly for one prepared package and root inserts one style set and returns reference-counted leases. A different document or `ShadowRoot` gets its own style set. Disposing while mounts remain defers URL release until their leases end.
 
+After `assets.dispose()`, new mounts, URL reads, and package instantiation with that prepared resource fail. Existing mount leases remain valid until released. Cleanup attempts every URL release even if one host releaser throws, then reports the collected failure.
+
 Preparation is transactional: if a later URL resolution or stylesheet step fails, every URL already obtained by that attempt is released exactly once. The Blob resolver shares URLs by content and reference count, so that rollback does not revoke a URL still held by another prepared package. `assets.dispose()` is lease-safe; `blobs.dispose()` is an explicit force-revoke operation and must only be called after all prepared packages using it have been disposed and their style leases released.
 
 Resolution uses a one-pass reader for the exact generated asset path, so paths such as `assets/a` and `assets/a.svg` cannot replace each other's prefixes. CSS URL fragments such as `url(componentonce-asset:/assets/icons.svg#check)` are preserved after the exact asset path is resolved. Resolver results must use the documented safe URL grammar: non-empty URLs without whitespace, quotes, parentheses, backslashes, or control characters.

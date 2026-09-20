@@ -3,6 +3,9 @@ import type { ComponentType } from "react";
 import * as React from "react";
 import * as jsxRuntime from "react/jsx-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
@@ -436,6 +439,66 @@ describe("compileTrustedReactModule", () => {
     const identicalCopy = await compileModule("collision-copy");
     expect(first).not.toBe(changedDependency);
     expect(first).toBe(identicalCopy);
+  });
+
+  it("builds portable identical asset graphs outside the invocation directory", async () => {
+    const roots = await Promise.all([
+      mkdtemp(join(tmpdir(), "componentonce-portable-a-")),
+      mkdtemp(join(tmpdir(), "componentonce-portable-b-")),
+    ]);
+    try {
+      for (const root of roots) {
+        await Promise.all([
+          writeFile(
+            join(root, "card.module.css"),
+            '.card { background: url("logo.svg#glyph"); }\n',
+          ),
+          writeFile(join(root, "logo.svg"), '<svg id="glyph"/>\n'),
+        ]);
+      }
+      const compile = (resolveDir: string) =>
+        compileTrustedModule({
+          source: 'import styles from "./card.module.css"; export { styles };',
+          sourceFileName: join(resolveDir, "portable-entry.ts"),
+          resolveDir,
+        });
+      const [first, second] = await Promise.all(roots.map(compile));
+      if (first === undefined || second === undefined) {
+        throw new Error("Expected two portable compilation results.");
+      }
+      const firstSerialized = JSON.stringify(first);
+
+      expect(second.code).toBe(first.code);
+      expect(second.assets).toEqual(first.assets);
+      expect(second.metafile).toEqual(first.metafile);
+      expect(firstSerialized).not.toContain(roots[0]!);
+      expect(firstSerialized).not.toContain(roots[1]!);
+      expect(firstSerialized).not.toContain(process.cwd());
+      expect(
+        Buffer.from(
+          first.assets.find((asset) => asset.path === "component.css")!.content,
+          "base64",
+        ).toString("utf8"),
+      ).toMatch(/componentonce-asset:.*\.svg#glyph/u);
+
+      await writeFile(
+        join(roots[0]!, "remote.css"),
+        '.remote { background: url("https://cdn.example/logo.svg"); }\n',
+      );
+      await expect(
+        compileTrustedModule({
+          source: 'import "./remote.css";',
+          sourceFileName: "remote-entry.ts",
+          resolveDir: roots[0],
+        }),
+      ).rejects.toMatchObject({
+        diagnostics: [
+          expect.objectContaining({ text: expect.stringContaining("is not portable") }),
+        ],
+      });
+    } finally {
+      await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
+    }
   });
 
   it("serializes and parses a deterministic v2 package with every emitted file", async () => {
