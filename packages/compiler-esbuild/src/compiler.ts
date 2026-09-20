@@ -265,6 +265,16 @@ export async function compileTrustedModule(
   const contentTypes = normalizeContentTypes(input.contentTypes);
 
   try {
+    const compilationNamespace = await calculateCompilationNamespace({
+      source: input.source,
+      sourceFileName,
+      loader,
+      ...(input.resolveDir === undefined ? {} : { resolveDir: input.resolveDir }),
+      jsx: input.jsx ?? "transform",
+      loaders,
+      allowedExternals,
+      outputDirectory,
+    });
     const result = await build({
       assetNames: "assets/[hash]",
       bundle: true,
@@ -280,7 +290,7 @@ export async function compileTrustedModule(
       outdir: outputDirectory,
       platform: "neutral",
       plugins: [
-        createCssModuleNamespacePlugin(),
+        createCssModuleNamespacePlugin(compilationNamespace),
         createHostExternalPlugin(allowedExternals),
       ],
       publicPath: COMPONENTONCE_ASSET_URL_PREFIX,
@@ -588,7 +598,86 @@ const CONTENT_TYPES: Readonly<Record<string, string>> = {
   ".woff2": "font/woff2",
 };
 
-function createCssModuleNamespacePlugin(): Plugin {
+interface CompilationNamespaceInput {
+  readonly source: string;
+  readonly sourceFileName: string;
+  readonly loader: ComponentOnceSourceLoader;
+  readonly resolveDir?: string;
+  readonly jsx: ComponentOnceJsxMode;
+  readonly loaders: Readonly<Record<string, ComponentOnceAdditionalLoader>>;
+  readonly allowedExternals: ReadonlySet<string>;
+  readonly outputDirectory: string;
+}
+
+async function calculateCompilationNamespace(
+  input: CompilationNamespaceInput,
+): Promise<string> {
+  const result = await build({
+    assetNames: "assets/[hash]",
+    bundle: true,
+    entryNames: "component",
+    format: "cjs",
+    jsx: input.jsx,
+    legalComments: "none",
+    loader: input.loaders as Record<string, Loader>,
+    logLevel: "silent",
+    metafile: true,
+    minify: false,
+    outdir: input.outputDirectory,
+    platform: "neutral",
+    plugins: [createHostExternalPlugin(input.allowedExternals)],
+    publicPath: COMPONENTONCE_ASSET_URL_PREFIX,
+    stdin: {
+      contents: input.source,
+      loader: input.loader as Loader,
+      sourcefile: input.sourceFileName,
+      ...(input.resolveDir === undefined ? {} : { resolveDir: input.resolveDir }),
+    },
+    target: "es2022",
+    treeShaking: true,
+    write: false,
+  });
+  if (result.metafile === undefined) {
+    throw new ComponentOnceCompileError([
+      createInternalDiagnostic("esbuild prepass did not return dependency metadata."),
+    ]);
+  }
+
+  const root = input.resolveDir ?? process.cwd();
+  const virtualEntryPath = resolve(root, input.sourceFileName);
+  const hash = createHash("sha256");
+  updateNamespacedHash(hash, "entry/" + basename(input.sourceFileName), Buffer.from(input.source));
+  const dependencyFiles = Object.keys(result.metafile.inputs)
+    .flatMap((inputPath) => {
+      if (inputPath === input.sourceFileName || inputPath === "<stdin>") return [];
+      const absolutePath = isAbsolute(inputPath) ? inputPath : resolve(process.cwd(), inputPath);
+      if (absolutePath === virtualEntryPath) return [];
+      return [{
+        absolutePath,
+        stablePath: relative(root, absolutePath).replace(/\\/gu, "/"),
+      }];
+    })
+    .sort((left, right) => left.stablePath.localeCompare(right.stablePath));
+  for (const dependency of dependencyFiles) {
+    updateNamespacedHash(
+      hash,
+      dependency.stablePath,
+      await readFile(dependency.absolutePath),
+    );
+  }
+  return hash.digest("hex").slice(0, 16);
+}
+
+function updateNamespacedHash(
+  hash: ReturnType<typeof createHash>,
+  path: string,
+  contents: Uint8Array,
+): void {
+  hash.update(String(Buffer.byteLength(path, "utf8"))).update(":").update(path);
+  hash.update(String(contents.byteLength)).update(":").update(contents);
+}
+
+function createCssModuleNamespacePlugin(compilationNamespace: string): Plugin {
   const namespace = "componentonce-local-css";
   return {
     name: "componentonce-css-module-namespace",
@@ -599,7 +688,10 @@ function createCssModuleNamespacePlugin(): Plugin {
         const contentNamespace = createHash("sha256").update(contents).digest("hex").slice(0, 12);
         const originalName = basename(realPath, ".module.css");
         return {
-          path: resolve(dirname(realPath), originalName + "-" + contentNamespace + ".module.css"),
+          path: resolve(
+            dirname(realPath),
+            originalName + "-" + compilationNamespace + "-" + contentNamespace + ".module.css",
+          ),
           namespace,
           pluginData: { realPath },
         };

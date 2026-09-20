@@ -419,6 +419,25 @@ describe("compileTrustedReactModule", () => {
     expect(firstStyles.root).not.toBe(secondStyles.root);
   });
 
+  it("names equal CSS Modules by dependency content without using absolute directories", async () => {
+    const compileModule = async (fixture: string) => {
+      const artifact = await compileTrustedModule({
+        source: `import styles from "./card.module.css"; export { styles };`,
+        sourceFileName: "module-entry.ts",
+        resolveDir: fileURLToPath(new URL("./fixtures/" + fixture + "/", import.meta.url)),
+      });
+      return instantiateTrustedBundle<{
+        readonly styles: { readonly card: string };
+      }>(artifact, { externals: {} }).styles.card;
+    };
+
+    const first = await compileModule("collision-a");
+    const changedDependency = await compileModule("collision-b");
+    const identicalCopy = await compileModule("collision-copy");
+    expect(first).not.toBe(changedDependency);
+    expect(first).toBe(identicalCopy);
+  });
+
   it("serializes and parses a deterministic v2 package with every emitted file", async () => {
     const buildInput = {
       source: `
@@ -449,6 +468,18 @@ describe("compileTrustedReactModule", () => {
     expect(serializeTrustedComponentPackage(repeatedPackage)).toBe(serialized);
     const parsed = parseTrustedComponentPackage(serialized);
     expect(serializeTrustedComponentPackage(parsed)).toBe(serialized);
+    const inspected = instantiateTrustedComponentPackage<{
+      readonly manifest: { readonly id: string; readonly version: string };
+      readonly implementation: () => { readonly logo: string; readonly className: string };
+    }>(parsed, {
+      externals: {
+        react: React,
+        "react/jsx-runtime": jsxRuntime,
+      },
+    });
+    expect(inspected.implementation().logo).toContain(
+      COMPONENTONCE_ASSET_URL_PREFIX,
+    );
     const loaded = instantiateTrustedComponentPackage<{
       readonly manifest: { readonly id: string; readonly version: string };
       readonly implementation: () => { readonly logo: string; readonly className: string };
@@ -473,5 +504,8 @@ describe("compileTrustedReactModule", () => {
     expect(() => parseTrustedComponentPackage(serialized, { maxAssets: 1 })).toThrow(
       /maxAssets/u,
     );
+    expect(() =>
+      parseTrustedComponentPackage(serialized, { maxAssetBytes: 5 }),
+    ).toThrow(/maxAssetBytes/u);
   });
 });

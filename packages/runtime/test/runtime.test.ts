@@ -84,6 +84,42 @@ async function createAssetPackage(): Promise<ComponentOnceTrustedPackageV2> {
   };
 }
 
+async function createPrefixAssetPackage(): Promise<ComponentOnceTrustedPackageV2> {
+  const code = [
+    "module.exports.definition = {",
+    '  manifest: { id: "example/prefix-assets", version: "1.0.0" },',
+    "  implementation: () => ({",
+    '    short: "before:componentonce-asset:/assets/a:after",',
+    '    long: "left:componentonce-asset:/assets/a.svg:right",',
+    "  }),",
+    "};",
+  ].join("\n");
+  const hash = await calculateTrustedBundleSha256(code);
+  const assets = await Promise.all([
+    createAsset("assets/a", "application/octet-stream", "short"),
+    createAsset("assets/a.svg", "image/svg+xml", "<svg/>") ,
+    createAsset(
+      "component.css",
+      "text/css",
+      ".one{src:url(componentonce-asset:/assets/a)}.two{src:url(componentonce-asset:/assets/a.svg#glyph)}",
+    ),
+  ]);
+  return {
+    format: "componentonce.trusted-package.v2",
+    renderer: "custom",
+    manifest: { id: "example/prefix-assets", version: "1.0.0" },
+    definitionExport: "definition",
+    bundle: {
+      format: "componentonce.trusted-cjs.v1",
+      code,
+      ...hash,
+      externalModules: [],
+    },
+    assets,
+    stylesheets: ["component.css"],
+  };
+}
+
 interface FakeDom {
   readonly document: Document;
   readonly styles: Array<{ textContent: string | null; removed: boolean }>;
@@ -219,6 +255,16 @@ describe("browser-safe trusted runtime", () => {
     ).rejects.toBeInstanceOf(ComponentOnceIntegrityError);
   });
 
+  it("keeps the public two-argument integrity error constructor", () => {
+    const error = new ComponentOnceIntegrityError("expected", "actual");
+    expect(error.expectedSha256).toBe("expected");
+    expect(error.actualSha256).toBe("actual");
+    expect(error.path).toBe("bundle");
+    expect(error.message).toBe(
+      'Trusted bundle integrity mismatch. Expected SHA-256 "expected" but received "actual".',
+    );
+  });
+
   it("rejects an executable definition whose manifest disagrees with package metadata", async () => {
     const componentPackage = await createPackage(
       'module.exports.definition = { manifest: { id: "example/card", version: "2.0.0" }, implementation: () => 1 };',
@@ -325,6 +371,102 @@ describe("browser-safe trusted runtime", () => {
     expect(() =>
       parseTrustedComponentPackage(JSON.stringify(valid), { maxAssets: 2 }),
     ).toThrow(/maxAssets/u);
+    expect(() =>
+      parseTrustedComponentPackage(JSON.stringify(valid), { maxAssetBytes: 5 }),
+    ).toThrow(/maxAssetBytes/u);
+  });
+
+  it("replaces exact prefix-related tokens once and preserves CSS URL fragments", async () => {
+    const parsed = parseTrustedComponentPackage(
+      JSON.stringify(await createPrefixAssetPackage()),
+    );
+    if (parsed.format !== "componentonce.trusted-package.v2") throw new Error("expected v2");
+    const prepared = await prepareTrustedComponentPackageAssets(parsed, {
+      resolveAssetUrl: (asset) => "https://assets.example/" + asset.path,
+    });
+    const definition = await instantiateTrustedComponentPackage(parsed, {
+      externals: {},
+      preparedAssets: prepared,
+    });
+    expect(
+      (definition.implementation as () => { short: string; long: string })(),
+    ).toEqual({
+      short: "before:https://assets.example/assets/a:after",
+      long: "left:https://assets.example/assets/a.svg:right",
+    });
+    const fakeDocument = createFakeDocument();
+    const mount = prepared.mountStyles(fakeDocument.document);
+    expect(fakeDocument.styles[0]?.textContent).toContain(
+      "https://assets.example/assets/a.svg#glyph",
+    );
+    mount.release();
+    prepared.dispose();
+  });
+
+  it("rolls back a failed prepare without revoking URLs held by a live package", async () => {
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    const revoked: string[] = [];
+    let created = 0;
+    URL.createObjectURL = () => "blob:shared-" + ++created;
+    URL.revokeObjectURL = (url) => revoked.push(url);
+    try {
+      const resolver = createBrowserBlobAssetUrlResolver();
+      const parsed = parseTrustedComponentPackage(
+        JSON.stringify(await createAssetPackage()),
+      );
+      if (parsed.format !== "componentonce.trusted-package.v2") throw new Error("expected v2");
+      const live = await prepareTrustedComponentPackageAssets(parsed, {
+        resolveAssetUrl: resolver.resolveAssetUrl,
+        releaseAssetUrl: resolver.releaseAssetUrl,
+      });
+      const fakeDocument = createFakeDocument();
+      const liveMount = live.mountStyles(fakeDocument.document);
+      let calls = 0;
+      await expect(
+        prepareTrustedComponentPackageAssets(parsed, {
+          resolveAssetUrl: async (asset) => {
+            calls += 1;
+            if (calls === 2) throw new Error("resolver failed");
+            return resolver.resolveAssetUrl(asset);
+          },
+          releaseAssetUrl: resolver.releaseAssetUrl,
+        }),
+      ).rejects.toThrow("resolver failed");
+      expect(revoked).toEqual([]);
+
+      live.dispose();
+      expect(revoked).toEqual([]);
+      liveMount.release();
+      expect(revoked).toHaveLength(2);
+      resolver.dispose();
+    } finally {
+      URL.createObjectURL = originalCreate;
+      URL.revokeObjectURL = originalRevoke;
+    }
+  });
+
+  it("releases every created URL once when stylesheet preparation fails", async () => {
+    const valid = await createAssetPackage();
+    const invalidStylesheet = await createAsset(
+      "component.css",
+      "text/css",
+      ".root{background:url(componentonce-asset:/assets/missing.svg)}",
+    );
+    const invalid: ComponentOnceTrustedPackageV2 = {
+      ...valid,
+      assets: valid.assets.map((asset) =>
+        asset.path === "component.css" ? invalidStylesheet : asset,
+      ),
+    };
+    const released: string[] = [];
+    await expect(
+      prepareTrustedComponentPackageAssets(invalid, {
+        resolveAssetUrl: (asset) => "https://assets.example/" + asset.path,
+        releaseAssetUrl: (asset) => released.push(asset.path),
+      }),
+    ).rejects.toThrow(/No prepared ComponentOnce asset URL/u);
+    expect(released.sort()).toEqual(["assets/font.woff2", "assets/logo.svg"]);
   });
 
   it("shares and revokes browser Blob URLs by asset content", async () => {
@@ -353,7 +495,9 @@ describe("browser-safe trusted runtime", () => {
       expect(revoked).toEqual([]);
       resolver.releaseAssetUrl(resolved, second);
       expect(revoked).toEqual([first]);
+      const forced = await resolver.resolveAssetUrl(resolved);
       resolver.dispose();
+      expect(revoked).toEqual([first, forced]);
     } finally {
       URL.createObjectURL = originalCreate;
       URL.revokeObjectURL = originalRevoke;
