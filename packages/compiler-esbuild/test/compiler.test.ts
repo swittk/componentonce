@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  COMPONENTONCE_ASSET_URL_PREFIX,
   COMPONENTONCE_TRUSTED_BUNDLE_FORMAT,
   COMPONENTONCE_TRUSTED_PACKAGE_FORMAT,
   ComponentOnceCompileError,
@@ -319,5 +320,158 @@ describe("compileTrustedReactModule", () => {
         },
       }),
     ).toThrow(ComponentOncePackageManifestMismatchError);
+  });
+
+  it("packages CSS, CSS Modules, nested CSS imports, file URLs, and arbitrary bytes", async () => {
+    const resolveDir = fileURLToPath(new URL("./fixtures", import.meta.url));
+    const artifact = await compileTrustedModule({
+      source: `
+        import "./styles.css";
+        import styles from "./card.module.css";
+        import logo from "./logo.svg";
+        import pixel from "./pixel.png";
+        import payload from "./payload.bin";
+        import data from "./data.json";
+        import note from "./note.txt";
+        export const values = { styles, logo, pixel, payload, data, note };
+      `,
+      sourceFileName: "asset-entry.ts",
+      resolveDir,
+      loaders: { ".bin": "file" },
+      contentTypes: { ".bin": "application/x-example-binary" },
+    });
+
+    expect(artifact.stylesheets).toEqual(["component.css"]);
+    const assets = artifact.assets ?? [];
+    expect(assets).toHaveLength(5);
+    expect(assets.map((asset) => asset.path)).toEqual(
+      expect.arrayContaining([
+        "component.css",
+        expect.stringMatching(/^assets\/[A-Z0-9]+\.bin$/u),
+        expect.stringMatching(/^assets\/[A-Z0-9]+\.png$/u),
+        expect.stringMatching(/^assets\/[A-Z0-9]+\.svg$/u),
+        expect.stringMatching(/^assets\/[A-Z0-9]+\.woff2$/u),
+      ]),
+    );
+    expect(assets.find((asset) => asset.path.endsWith(".bin"))?.contentType).toBe(
+      "application/x-example-binary",
+    );
+    expect(assets.find((asset) => asset.path.endsWith(".png"))?.contentType).toBe(
+      "image/png",
+    );
+    const stylesheet = Buffer.from(
+      assets.find((asset) => asset.path === "component.css")!.content,
+      "base64",
+    ).toString("utf8");
+    expect(stylesheet).toContain(".nested-rule");
+    expect(stylesheet).toContain(COMPONENTONCE_ASSET_URL_PREFIX);
+    expect(artifact.code).toContain(COMPONENTONCE_ASSET_URL_PREFIX);
+
+    const loaded = instantiateTrustedBundle<{
+      readonly values: {
+        readonly styles: { readonly root: string };
+        readonly logo: string;
+        readonly pixel: string;
+        readonly payload: string;
+        readonly data: { readonly answer: number };
+        readonly note: string;
+      };
+    }>(artifact, { externals: {} });
+    expect(loaded.values.styles.root).toMatch(/root/u);
+    expect(loaded.values.logo).toContain(COMPONENTONCE_ASSET_URL_PREFIX);
+    expect(loaded.values.pixel).toContain(COMPONENTONCE_ASSET_URL_PREFIX);
+    expect(loaded.values.payload).toContain(COMPONENTONCE_ASSET_URL_PREFIX);
+    expect(loaded.values.data.answer).toBe(42);
+    expect(loaded.values.note).toBe("ordinary text import\n");
+  });
+
+  it("allows explicit small data URLs without adding emitted assets", async () => {
+    const artifact = await compileTrustedModule({
+      source: `import logo from "./logo.svg"; export { logo };`,
+      sourceFileName: "inline-entry.ts",
+      resolveDir: fileURLToPath(new URL("./fixtures", import.meta.url)),
+      loaders: { ".svg": "dataurl" },
+    });
+    const loaded = instantiateTrustedBundle<{ readonly logo: string }>(artifact, {
+      externals: {},
+    });
+    expect(loaded.logo).toMatch(/^data:image\/svg\+xml/u);
+    expect(artifact.assets).toEqual([]);
+  });
+
+  it("names CSS Module classes by content so separate package builds cannot collide", async () => {
+    const compileModule = (resolveDir: string) =>
+      compileTrustedModule({
+        source: `import styles from "./card.module.css"; export { styles };`,
+        sourceFileName: "module-entry.ts",
+        resolveDir,
+      });
+    const first = await compileModule(fileURLToPath(new URL("./fixtures", import.meta.url)));
+    const second = await compileModule(
+      fileURLToPath(new URL("./fixtures/alternate", import.meta.url)),
+    );
+    const firstStyles = instantiateTrustedBundle<{
+      readonly styles: { readonly root: string };
+    }>(first, { externals: {} }).styles;
+    const secondStyles = instantiateTrustedBundle<{
+      readonly styles: { readonly root: string };
+    }>(second, { externals: {} }).styles;
+    expect(firstStyles.root).not.toBe(secondStyles.root);
+  });
+
+  it("serializes and parses a deterministic v2 package with every emitted file", async () => {
+    const buildInput = {
+      source: `
+        import logo from "./logo.svg";
+        import styles from "./card.module.css";
+        export const definition = {
+          manifest: { id: "example.asset-card", version: "1.0.0" },
+          implementation: () => ({ logo, className: styles.root }),
+        };
+      `,
+      sourceFileName: "asset-card.tsx",
+      resolveDir: fileURLToPath(new URL("./fixtures", import.meta.url)),
+      externals: {
+        react: React,
+        "react/jsx-runtime": jsxRuntime,
+      },
+    };
+    const componentPackage = await buildTrustedReactPackage(buildInput);
+    const repeatedPackage = await buildTrustedReactPackage(buildInput);
+    expect(componentPackage.format).toBe("componentonce.trusted-package.v2");
+    expect(componentPackage.assets.map((asset) => asset.path)).toEqual(
+      expect.arrayContaining([
+        "component.css",
+        expect.stringMatching(/^assets\/[A-Z0-9]+\.svg$/u),
+      ]),
+    );
+    const serialized = serializeTrustedComponentPackage(componentPackage);
+    expect(serializeTrustedComponentPackage(repeatedPackage)).toBe(serialized);
+    const parsed = parseTrustedComponentPackage(serialized);
+    expect(serializeTrustedComponentPackage(parsed)).toBe(serialized);
+    const loaded = instantiateTrustedComponentPackage<{
+      readonly manifest: { readonly id: string; readonly version: string };
+      readonly implementation: () => { readonly logo: string; readonly className: string };
+    }>(parsed, {
+      externals: {
+        react: React,
+        "react/jsx-runtime": jsxRuntime,
+      },
+      resolveAssetUrl: (asset) => "https://assets.example/" + asset.path,
+    });
+    expect(loaded.implementation().logo).toMatch(
+      /^https:\/\/assets\.example\/assets\//u,
+    );
+
+    const tampered = JSON.parse(serialized) as {
+      assets: Array<{ content: string }>;
+    };
+    tampered.assets[0]!.content = tampered.assets[0]!.content.replace(/A/u, "B");
+    expect(() => parseTrustedComponentPackage(JSON.stringify(tampered))).toThrow(
+      /integrity metadata/u,
+    );
+    expect(() => parseTrustedComponentPackage(serialized, { maxAssets: 1 })).toThrow(
+      /maxAssets/u,
+    );
   });
 });

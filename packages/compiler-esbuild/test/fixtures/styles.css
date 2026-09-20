@@ -1,0 +1,10 @@
+@import "./nested.css";
+
+@font-face {
+  font-family: "Example Sans";
+  src: url("./font.woff2") format("woff2");
+}
+
+.plain-card {
+  font-family: "Example Sans", sans-serif;
+}
