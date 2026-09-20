@@ -1,27 +1,87 @@
 import { createHash } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { readFile } from "node:fs/promises";
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  relative,
+  resolve,
+} from "node:path";
 import {
   build,
   type BuildFailure,
   type Loader,
   type Message,
   type Metafile,
+  type OutputFile,
   type Plugin,
 } from "esbuild";
 
 /** Stable identifier for the trusted CommonJS bundle contract emitted by this package. */
 export const COMPONENTONCE_TRUSTED_BUNDLE_FORMAT = "componentonce.trusted-cjs.v1" as const;
 
+/** URI prefix deliberately emitted by esbuild for packaged asset references. */
+export const COMPONENTONCE_ASSET_URL_PREFIX = "componentonce-asset:" as const;
+
 const DEFAULT_SOURCE_FILE_NAME = "componentonce-module.ts";
 const DEFAULT_REACT_SOURCE_FILE_NAME = "componentonce-module.tsx";
 const DEFAULT_EVALUATED_SOURCE_NAME = "componentonce-trusted-bundle.js";
 const REACT_EXTERNALS = ["react", "react/jsx-runtime", "react/jsx-dev-runtime"] as const;
+const OUTPUT_DIRECTORY_NAME = ".componentonce-output";
+const DEFAULT_FILE_LOADERS: Readonly<Record<string, ComponentOnceAdditionalLoader>> = {
+  ".avif": "file",
+  ".bmp": "file",
+  ".eot": "file",
+  ".gif": "file",
+  ".ico": "file",
+  ".jpeg": "file",
+  ".jpg": "file",
+  ".otf": "file",
+  ".png": "file",
+  ".svg": "file",
+  ".ttf": "file",
+  ".wasm": "file",
+  ".webp": "file",
+  ".woff": "file",
+  ".woff2": "file",
+};
 
 /** Source syntaxes accepted by the trusted compiler. */
 export type ComponentOnceSourceLoader = "js" | "jsx" | "ts" | "tsx";
 
 /** JSX transform mode forwarded to esbuild by the generic compiler. */
 export type ComponentOnceJsxMode = "transform" | "preserve" | "automatic";
+
+/** esbuild loaders callers may assign to additional relative source-file extensions. */
+export type ComponentOnceAdditionalLoader =
+  | "base64"
+  | "binary"
+  | "css"
+  | "dataurl"
+  | "file"
+  | "global-css"
+  | "json"
+  | "local-css"
+  | "text";
+
+/** One immutable file emitted alongside the executable bundle. */
+export interface ComponentOnceCompiledAsset {
+  /** Safe normalized path used by generated asset references. */
+  readonly path: string;
+  /** Media type exposed to URL resolvers and style consumers. */
+  readonly contentType: string;
+  /** Portable byte encoding used by the package envelope. */
+  readonly encoding: "base64";
+  /** Exact emitted bytes encoded as canonical base64. */
+  readonly content: string;
+  /** Exact decoded byte length. */
+  readonly byteLength: number;
+  /** Lowercase hexadecimal SHA-256 digest. */
+  readonly sha256: string;
+  /** Subresource-integrity-style SHA-256 digest. */
+  readonly integrity: string;
+}
 
 /** Input for compiling one trusted JavaScript or TypeScript module. */
 export interface ComponentOnceCompileInput {
@@ -37,6 +97,10 @@ export interface ComponentOnceCompileInput {
   readonly externalModules?: readonly string[];
   /** JSX transform mode; generic compilation defaults to transform. */
   readonly jsx?: ComponentOnceJsxMode;
+  /** Additional extension-to-loader rules; common web images and fonts default to `file`. */
+  readonly loaders?: Readonly<Record<string, ComponentOnceAdditionalLoader>>;
+  /** Optional extension-to-content-type overrides for emitted file-loader assets. */
+  readonly contentTypes?: Readonly<Record<string, string>>;
 }
 
 /** React convenience compiler input; React externals are supplied by the wrapper. */
@@ -48,6 +112,10 @@ export interface ComponentOnceReactCompileInput {
   readonly resolveDir?: string;
   /** Additional non-React host externals. */
   readonly additionalExternalModules?: readonly string[];
+  /** Additional extension-to-loader rules; common web images and fonts default to `file`. */
+  readonly loaders?: Readonly<Record<string, ComponentOnceAdditionalLoader>>;
+  /** Optional extension-to-content-type overrides for emitted file-loader assets. */
+  readonly contentTypes?: Readonly<Record<string, string>>;
 }
 
 /** Source location attached to a normalized compiler diagnostic. */
@@ -87,8 +155,8 @@ export interface ComponentOnceDiagnostic {
 /** Read-only esbuild metadata describing the emitted bundle and its external imports. */
 export type ComponentOnceBundleMetafile = Readonly<Metafile>;
 
-/** Immutable, storage-neutral output of the trusted module compiler. */
-export interface ComponentOnceTrustedBundleArtifact {
+/** Integrity-protected executable bundle fields persisted in package envelopes. */
+export interface ComponentOnceTrustedBundle {
   /** Bundle contract understood by `instantiateTrustedBundle`. */
   readonly format: typeof COMPONENTONCE_TRUSTED_BUNDLE_FORMAT;
   /** Executable CommonJS bundle text. */
@@ -105,6 +173,14 @@ export interface ComponentOnceTrustedBundleArtifact {
   readonly diagnostics: readonly ComponentOnceDiagnostic[];
   /** esbuild metadata for dependency and output inspection. */
   readonly metafile: ComponentOnceBundleMetafile;
+}
+
+/** Immutable, storage-neutral output of the trusted module compiler. */
+export interface ComponentOnceTrustedBundleArtifact extends ComponentOnceTrustedBundle {
+  /** Every non-JavaScript output emitted by esbuild, sorted by path. */
+  readonly assets: readonly ComponentOnceCompiledAsset[];
+  /** Sorted asset paths that contain CSS gathered from the JavaScript entry point. */
+  readonly stylesheets: readonly string[];
 }
 
 /** Compilation failure with stable, normalized esbuild diagnostics. */
@@ -126,7 +202,7 @@ export type ComponentOnceHostExternals = Readonly<Record<string, unknown>>;
 export type ComponentOnceTrustedBundleSource =
   | string
   | Uint8Array
-  | ComponentOnceTrustedBundleArtifact;
+  | ComponentOnceTrustedBundle;
 
 /** Options controlling explicit external injection and optional integrity verification. */
 export interface InstantiateTrustedBundleOptions {
@@ -184,19 +260,30 @@ export async function compileTrustedModule(
   const sourceFileName = input.sourceFileName ?? DEFAULT_SOURCE_FILE_NAME;
   const loader = input.loader ?? inferLoader(sourceFileName);
   const allowedExternals = normalizeAllowedExternals(input.externalModules ?? []);
+  const outputDirectory = resolve(input.resolveDir ?? process.cwd(), OUTPUT_DIRECTORY_NAME);
+  const loaders = normalizeLoaders(input.loaders);
+  const contentTypes = normalizeContentTypes(input.contentTypes);
 
   try {
     const result = await build({
+      assetNames: "assets/[hash]",
       bundle: true,
       charset: "utf8",
+      entryNames: "component",
       format: "cjs",
       jsx: input.jsx ?? "transform",
       legalComments: "none",
+      loader: loaders as Record<string, Loader>,
       logLevel: "silent",
       metafile: true,
       minify: false,
+      outdir: outputDirectory,
       platform: "neutral",
-      plugins: [createHostExternalPlugin(allowedExternals)],
+      plugins: [
+        createCssModuleNamespacePlugin(),
+        createHostExternalPlugin(allowedExternals),
+      ],
+      publicPath: COMPONENTONCE_ASSET_URL_PREFIX,
       sourcemap: "inline",
       sourcesContent: true,
       stdin: {
@@ -210,14 +297,19 @@ export async function compileTrustedModule(
       write: false,
     });
 
-    const output = result.outputFiles?.[0];
-    if (output === undefined || result.metafile === undefined) {
+    if (result.outputFiles === undefined || result.metafile === undefined) {
       throw new ComponentOnceCompileError([
         createInternalDiagnostic("esbuild did not return an in-memory bundle and metafile."),
       ]);
     }
 
-    const code = output.text;
+    const outputs = classifyOutputs(
+      result.outputFiles,
+      outputDirectory,
+      contentTypes,
+      result.metafile,
+    );
+    const code = outputs.code;
     const hashes = hashBundleSource(code);
     const metafile = deepFreeze(result.metafile);
     const diagnostics = Object.freeze(
@@ -234,6 +326,8 @@ export async function compileTrustedModule(
       externalModules,
       diagnostics,
       metafile,
+      assets: outputs.assets,
+      stylesheets: outputs.stylesheets,
     });
   } catch (error: unknown) {
     if (error instanceof ComponentOnceCompileError) throw error;
@@ -255,6 +349,8 @@ export function compileTrustedReactModule(
     sourceFileName: input.sourceFileName ?? DEFAULT_REACT_SOURCE_FILE_NAME,
     ...(input.loader === undefined ? {} : { loader: input.loader }),
     ...(input.resolveDir === undefined ? {} : { resolveDir: input.resolveDir }),
+    ...(input.loaders === undefined ? {} : { loaders: input.loaders }),
+    ...(input.contentTypes === undefined ? {} : { contentTypes: input.contentTypes }),
     externalModules: [
       ...REACT_EXTERNALS,
       ...(input.additionalExternalModules ?? []),
@@ -322,6 +418,218 @@ export function instantiateTrustedBundle<TExports = Record<string, unknown>>(
 
   evaluate(commonJsModule, commonJsModule.exports, trustedRequire);
   return commonJsModule.exports as TExports;
+}
+
+function classifyOutputs(
+  outputFiles: readonly OutputFile[],
+  outputDirectory: string,
+  contentTypes: Readonly<Record<string, string>>,
+  metafile: Metafile,
+): {
+  readonly code: string;
+  readonly assets: readonly ComponentOnceCompiledAsset[];
+  readonly stylesheets: readonly string[];
+} {
+  let code: string | undefined;
+  const assets: ComponentOnceCompiledAsset[] = [];
+  const stylesheets: string[] = [];
+  const entryMetadata = Object.entries(metafile.outputs).find(
+    ([, metadata]) => metadata.entryPoint !== undefined,
+  );
+  if (entryMetadata === undefined) {
+    throw new ComponentOnceCompileError([
+      createInternalDiagnostic("esbuild metafile does not identify the JavaScript entry output."),
+    ]);
+  }
+  const entryOutput = findOutputFile(outputFiles, entryMetadata[0]);
+  const stylesheetOutput =
+    entryMetadata[1].cssBundle === undefined
+      ? undefined
+      : findOutputFile(outputFiles, entryMetadata[1].cssBundle);
+  if (entryOutput === undefined || (entryMetadata[1].cssBundle !== undefined && stylesheetOutput === undefined)) {
+    throw new ComponentOnceCompileError([
+      createInternalDiagnostic("esbuild metafile references an output file that was not returned."),
+    ]);
+  }
+
+  for (const output of outputFiles) {
+    const path = normalizeOutputPath(relative(outputDirectory, output.path));
+    if (output === entryOutput) {
+      if (code !== undefined) {
+        throw new ComponentOnceCompileError([
+          createInternalDiagnostic("esbuild emitted duplicate JavaScript entry outputs."),
+        ]);
+      }
+      code = output.text;
+      continue;
+    }
+    const hashes = hashBundleSource(output.contents);
+    const contentType = contentTypeForPath(path, contentTypes);
+    assets.push(
+      Object.freeze({
+        path,
+        contentType,
+        encoding: "base64" as const,
+        content: Buffer.from(output.contents).toString("base64"),
+        byteLength: hashes.byteLength,
+        sha256: hashes.sha256,
+        integrity: hashes.integrity,
+      }),
+    );
+    if (output === stylesheetOutput) stylesheets.push(path);
+  }
+
+  if (code === undefined) {
+    throw new ComponentOnceCompileError([
+      createInternalDiagnostic("esbuild did not emit the expected component.js entry bundle."),
+    ]);
+  }
+  assets.sort((left, right) => left.path.localeCompare(right.path));
+  stylesheets.sort();
+  return {
+    code,
+    assets: Object.freeze(assets),
+    stylesheets: Object.freeze(stylesheets),
+  };
+}
+
+function findOutputFile(
+  outputFiles: readonly OutputFile[],
+  metadataPath: string,
+): OutputFile | undefined {
+  const normalizedMetadataPath = metadataPath.replace(/\\/gu, "/");
+  return outputFiles.find((output) => {
+    const normalizedOutputPath = output.path.replace(/\\/gu, "/");
+    return (
+      normalizedOutputPath === normalizedMetadataPath ||
+      normalizedOutputPath.endsWith("/" + normalizedMetadataPath)
+    );
+  });
+}
+
+function normalizeOutputPath(value: string): string {
+  const path = value.replace(/\\/gu, "/");
+  if (
+    path.length === 0 ||
+    path.startsWith("/") ||
+    path === ".." ||
+    path.startsWith("../") ||
+    path.includes("/../") ||
+    path.includes("\0")
+  ) {
+    throw new ComponentOnceCompileError([
+      createInternalDiagnostic("esbuild emitted an unsafe output path: " + JSON.stringify(path) + "."),
+    ]);
+  }
+  return path;
+}
+
+function normalizeLoaders(
+  configured: Readonly<Record<string, ComponentOnceAdditionalLoader>> | undefined,
+): Readonly<Record<string, ComponentOnceAdditionalLoader>> {
+  const normalized: Record<string, ComponentOnceAdditionalLoader> = {
+    ...DEFAULT_FILE_LOADERS,
+  };
+  for (const [extension, loader] of Object.entries(configured ?? {})) {
+    if (!/^\.[a-zA-Z0-9._-]+$/u.test(extension)) {
+      throw new ComponentOnceCompileError([
+        createInternalDiagnostic("Invalid loader extension: " + JSON.stringify(extension) + "."),
+      ]);
+    }
+    normalized[extension.toLowerCase()] = loader;
+  }
+  return normalized;
+}
+
+function normalizeContentTypes(
+  configured: Readonly<Record<string, string>> | undefined,
+): Readonly<Record<string, string>> {
+  const normalized: Record<string, string> = {};
+  for (const [extension, contentType] of Object.entries(configured ?? {})) {
+    if (!/^\.[a-zA-Z0-9._-]+$/u.test(extension)) {
+      throw new ComponentOnceCompileError([
+        createInternalDiagnostic("Invalid content type extension: " + JSON.stringify(extension) + "."),
+      ]);
+    }
+    if (contentType.trim() === "" || /[\0\r\n]/u.test(contentType)) {
+      throw new ComponentOnceCompileError([
+        createInternalDiagnostic("Invalid content type: " + JSON.stringify(contentType) + "."),
+      ]);
+    }
+    normalized[extension.toLowerCase()] = contentType;
+  }
+  return normalized;
+}
+
+function contentTypeForPath(
+  path: string,
+  configured: Readonly<Record<string, string>>,
+): string {
+  const extension = extname(path).toLowerCase();
+  return configured[extension] ?? CONTENT_TYPES[extension] ?? "application/octet-stream";
+}
+
+const CONTENT_TYPES: Readonly<Record<string, string>> = {
+  ".avif": "image/avif",
+  ".bmp": "image/bmp",
+  ".css": "text/css",
+  ".eot": "application/vnd.ms-fontobject",
+  ".gif": "image/gif",
+  ".ico": "image/x-icon",
+  ".jpeg": "image/jpeg",
+  ".jpg": "image/jpeg",
+  ".otf": "font/otf",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".ttf": "font/ttf",
+  ".wasm": "application/wasm",
+  ".webp": "image/webp",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+};
+
+function createCssModuleNamespacePlugin(): Plugin {
+  const namespace = "componentonce-local-css";
+  return {
+    name: "componentonce-css-module-namespace",
+    setup(buildApi) {
+      const resolveModule = async (path: string, resolveDir: string) => {
+        const realPath = isAbsolute(path) ? path : resolve(resolveDir, path);
+        const contents = await readFile(realPath);
+        const contentNamespace = createHash("sha256").update(contents).digest("hex").slice(0, 12);
+        const originalName = basename(realPath, ".module.css");
+        return {
+          path: resolve(dirname(realPath), originalName + "-" + contentNamespace + ".module.css"),
+          namespace,
+          pluginData: { realPath },
+        };
+      };
+
+      buildApi.onResolve({ filter: /\.module\.css$/ }, (args) =>
+        resolveModule(args.path, args.resolveDir),
+      );
+      buildApi.onResolve({ filter: /.*/, namespace }, (args) => {
+        if (args.path.endsWith(".module.css")) {
+          return resolveModule(args.path, args.resolveDir);
+        }
+        if (args.path.startsWith(".") || isAbsolute(args.path)) {
+          return { path: isAbsolute(args.path) ? args.path : resolve(args.resolveDir, args.path) };
+        }
+        return undefined;
+      });
+      buildApi.onLoad({ filter: /.*/, namespace }, async (args) => {
+        const pluginData = args.pluginData as { readonly realPath?: unknown } | undefined;
+        if (typeof pluginData?.realPath !== "string") {
+          return { errors: [{ text: "Missing original CSS Module path." }] };
+        }
+        return {
+          contents: await readFile(pluginData.realPath),
+          loader: "local-css",
+          resolveDir: dirname(pluginData.realPath),
+        };
+      });
+    },
+  };
 }
 
 function createHostExternalPlugin(allowedExternals: ReadonlySet<string>): Plugin {
@@ -462,7 +770,7 @@ function hashBundleSource(source: string | Uint8Array): {
 
 function isBundleArtifact(
   source: ComponentOnceTrustedBundleSource,
-): source is ComponentOnceTrustedBundleArtifact {
+): source is ComponentOnceTrustedBundle {
   return typeof source === "object" && !(source instanceof Uint8Array);
 }
 

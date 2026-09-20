@@ -8,6 +8,7 @@ import {
   buildTrustedReactPackage,
   serializeTrustedComponentPackage,
 } from "./package.js";
+import type { ComponentOnceAdditionalLoader } from "./compiler.js";
 
 interface CliBuildOptions {
   readonly entry: string;
@@ -15,6 +16,8 @@ interface CliBuildOptions {
   readonly out: string;
   readonly definitionExport?: string;
   readonly externalModules: readonly string[];
+  readonly loaders: Readonly<Record<string, ComponentOnceAdditionalLoader>>;
+  readonly contentTypes: Readonly<Record<string, string>>;
 }
 
 const REACT_HOST_EXTERNALS = [
@@ -53,6 +56,8 @@ export async function runComponentOnceCli(args: readonly string[]): Promise<void
           sourceFileName: basename(entryPath),
           resolveDir: sourceDir,
           externals,
+          loaders: options.loaders,
+          contentTypes: options.contentTypes,
           ...(options.definitionExport === undefined
             ? {}
             : { definitionExport: options.definitionExport }),
@@ -63,6 +68,8 @@ export async function runComponentOnceCli(args: readonly string[]): Promise<void
           resolveDir: sourceDir,
           renderer: options.renderer,
           externals,
+          loaders: options.loaders,
+          contentTypes: options.contentTypes,
           ...(options.definitionExport === undefined
             ? {}
             : { definitionExport: options.definitionExport }),
@@ -94,6 +101,8 @@ function parseBuildArgs(args: readonly string[]): CliBuildOptions {
   let out: string | undefined;
   let definitionExport: string | undefined;
   const externalModules: string[] = [];
+  const loaders: Record<string, ComponentOnceAdditionalLoader> = {};
+  const contentTypes: Record<string, string> = {};
 
   for (let index = 1; index < args.length; index += 1) {
     const arg = args[index];
@@ -115,6 +124,25 @@ function parseBuildArgs(args: readonly string[]): CliBuildOptions {
         externalModules.push(requireOptionValue(args, ++index, "--external"));
         break;
       }
+      case "--loader": {
+        const [extension, loader] = parseAssignment(
+          requireOptionValue(args, ++index, "--loader"),
+          "--loader",
+        );
+        if (!isAdditionalLoader(loader)) {
+          throw new Error("Unsupported --loader value " + JSON.stringify(loader) + ".");
+        }
+        loaders[extension] = loader;
+        break;
+      }
+      case "--content-type": {
+        const [extension, contentType] = parseAssignment(
+          requireOptionValue(args, ++index, "--content-type"),
+          "--content-type",
+        );
+        contentTypes[extension] = contentType;
+        break;
+      }
       default:
         throw new Error("Unknown build option \"" + String(arg) + "\".\n\n" + usage());
     }
@@ -126,7 +154,31 @@ function parseBuildArgs(args: readonly string[]): CliBuildOptions {
     out: out ?? defaultOutputPath(entry),
     ...(definitionExport === undefined ? {} : { definitionExport }),
     externalModules,
+    loaders,
+    contentTypes,
   };
+}
+
+function parseAssignment(value: string, option: string): [string, string] {
+  const separator = value.indexOf("=");
+  if (separator <= 0 || separator === value.length - 1) {
+    throw new Error(option + " requires <extension>=<value>.");
+  }
+  return [value.slice(0, separator), value.slice(separator + 1)];
+}
+
+function isAdditionalLoader(value: string): value is ComponentOnceAdditionalLoader {
+  return [
+    "base64",
+    "binary",
+    "css",
+    "dataurl",
+    "file",
+    "global-css",
+    "json",
+    "local-css",
+    "text",
+  ].includes(value);
 }
 
 function requireOptionValue(
@@ -193,6 +245,8 @@ function usage(): string {
     "  -o, --out <file>   Output JSON package (default: <entry>.componentonce.json)",
     "  --export <name>    Definition export name (default: definition)",
     "  --external <name>  Host module to keep external and load for trusted build-time discovery",
+    "  --loader <ext=kind> Additional esbuild loader, for example .bin=file or .svg=dataurl",
+    "  --content-type <ext=type>  Media type override for an emitted file-loader asset",
     "  -h, --help         Show this help",
     "",
     "React builds automatically externalize react, JSX runtimes, and @componentonce/react.",

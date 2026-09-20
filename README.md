@@ -52,7 +52,7 @@ componentonce build ./src/total-card.tsx \
   --out ./dist/total-card.componentonce.json
 ```
 
-The package contains the manifest plus the integrity-protected executable bundle. A catalog can read `package.manifest` without executing component code. The trusted high-level builder evaluates the module once during build to discover that manifest.
+The package contains the manifest, integrity-protected executable bundle, and any CSS, images, fonts, or configured file-loader outputs reached through ordinary relative imports. A catalog can read `package.manifest` without executing component code. The trusted high-level builder evaluates the module once during build to discover that manifest.
 
 Application integrations bind the host context type and runtime policy once; each component still owns its Props and Payload types:
 
@@ -89,11 +89,11 @@ React-free ordinary DOM components with explicit `mount -> update -> destroy` li
 
 ### `@componentonce/runtime`
 
-Browser-safe trusted package loading and execution. It parses the same self-describing package envelope emitted by compiler adapters, verifies executable bytes with Web Crypto SHA-256, and evaluates trusted bundles with an explicit host-external map. It imports no compiler or Node builtin.
+Browser-safe trusted package loading and execution. It parses the same self-describing package envelope emitted by compiler adapters, verifies executable and embedded asset bytes with Web Crypto SHA-256, prepares host-resolved asset URLs, attaches styles to an explicit `Document` or `ShadowRoot`, and evaluates trusted bundles with an explicit host-external map. It imports no compiler or Node builtin.
 
 ### `@componentonce/compiler-esbuild`
 
-Optional trusted build tooling. It supports low-level compilation plus self-describing package helpers and the `componentonce build` CLI. Relative imports can be bundled; package/runtime imports stay explicit host externals.
+Optional trusted build tooling. It supports low-level compilation plus self-describing package helpers and the `componentonce build` CLI. Relative JavaScript, CSS, CSS Module, and static-file imports can be bundled; package/runtime imports stay explicit host externals.
 
 ## Compatibility
 

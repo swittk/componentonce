@@ -4,30 +4,45 @@ import type {
   ComponentOnceManifest,
 } from "@componentonce/core";
 import {
+  COMPONENTONCE_ASSET_URL_PREFIX,
   COMPONENTONCE_TRUSTED_BUNDLE_FORMAT,
   assertTrustedBundleIntegrity,
   compileTrustedModule,
   compileTrustedReactModule,
   instantiateTrustedBundle,
   type ComponentOnceCompileInput,
+  type ComponentOnceCompiledAsset,
   type ComponentOnceHostExternals,
   type ComponentOnceReactCompileInput,
+  type ComponentOnceTrustedBundle,
   type ComponentOnceTrustedBundleArtifact,
   type InstantiateTrustedBundleOptions,
 } from "./compiler.js";
 
-/** Stable identifier for a self-describing ComponentOnce package envelope. */
-export const COMPONENTONCE_TRUSTED_PACKAGE_FORMAT = "componentonce.trusted-package.v1" as const;
+/** Legacy package-envelope identifier retained for persisted package compatibility. */
+export const COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V1 = "componentonce.trusted-package.v1" as const;
+
+/** Asset-capable package-envelope identifier emitted by current builders. */
+export const COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V2 = "componentonce.trusted-package.v2" as const;
+
+/** Current package-envelope identifier emitted by this compiler. */
+export const COMPONENTONCE_TRUSTED_PACKAGE_FORMAT = COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V2;
 
 /** Conventional named export containing a packaged ComponentOnce definition. */
 export const COMPONENTONCE_DEFAULT_DEFINITION_EXPORT = "definition" as const;
 
 const REACT_EXTERNALS = ["react", "react/jsx-runtime", "react/jsx-dev-runtime"] as const;
+const DEFAULT_PACKAGE_LIMITS: Required<ComponentOncePackageParseLimits> = {
+  maxPackageBytes: 48 * 1024 * 1024,
+  maxAssets: 256,
+  maxAssetBytes: 16 * 1024 * 1024,
+  maxTotalAssetBytes: 32 * 1024 * 1024,
+};
 
-/** Persistable package containing inspectable metadata plus one trusted executable bundle. */
-export interface ComponentOnceTrustedPackage {
+/** Persisted v1 package containing inspectable metadata plus one trusted executable bundle. */
+export interface ComponentOnceTrustedPackageV1 {
   /** Package-envelope contract version. */
-  readonly format: typeof COMPONENTONCE_TRUSTED_PACKAGE_FORMAT;
+  readonly format: typeof COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V1;
   /** Renderer/adapter id such as react or dom; custom adapters may use their own stable id. */
   readonly renderer: string;
   /** Component identity and compatibility metadata readable without executing the bundle. */
@@ -35,7 +50,38 @@ export interface ComponentOnceTrustedPackage {
   /** Named module export containing the ComponentOnce definition. */
   readonly definitionExport: string;
   /** Integrity-protected executable bundle produced by this compiler. */
-  readonly bundle: ComponentOnceTrustedBundleArtifact;
+  readonly bundle: ComponentOnceTrustedBundle;
+}
+
+/** Persisted v2 package containing executable code and integrity-protected static assets. */
+export interface ComponentOnceTrustedPackageV2 {
+  /** Asset-capable package-envelope contract version. */
+  readonly format: typeof COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V2;
+  /** Renderer/adapter id such as react or dom. */
+  readonly renderer: string;
+  /** Component identity and compatibility metadata readable without execution. */
+  readonly manifest: ComponentOnceManifest;
+  /** Named module export containing the ComponentOnce definition. */
+  readonly definitionExport: string;
+  /** Integrity-protected executable bundle produced by this compiler. */
+  readonly bundle: ComponentOnceTrustedBundle;
+  /** Sorted embedded files emitted by esbuild. */
+  readonly assets: readonly ComponentOnceCompiledAsset[];
+  /** Sorted asset paths containing styles that a host may mount explicitly. */
+  readonly stylesheets: readonly string[];
+}
+
+/** Any supported persisted trusted package envelope. */
+export type ComponentOnceTrustedPackage =
+  | ComponentOnceTrustedPackageV1
+  | ComponentOnceTrustedPackageV2;
+
+/** Bounds applied once while parsing untyped package input. */
+export interface ComponentOncePackageParseLimits {
+  readonly maxPackageBytes?: number;
+  readonly maxAssets?: number;
+  readonly maxAssetBytes?: number;
+  readonly maxTotalAssetBytes?: number;
 }
 
 /** Explicit inputs for wrapping an existing trusted bundle in a self-describing package. */
@@ -44,6 +90,10 @@ export interface CreateTrustedComponentPackageInput {
   readonly manifest: ComponentOnceManifest;
   readonly bundle: ComponentOnceTrustedBundleArtifact;
   readonly definitionExport?: string;
+  /** Embedded output files; defaults to outputs carried by the compiler artifact. */
+  readonly assets?: readonly ComponentOnceCompiledAsset[];
+  /** Stylesheet asset paths; defaults to outputs carried by the compiler artifact. */
+  readonly stylesheets?: readonly string[];
 }
 
 /** Generic trusted-definition build that discovers the manifest once at build time. */
@@ -62,6 +112,13 @@ export interface ComponentOnceReactPackageBuildInput extends ComponentOnceReactC
   readonly externals: ComponentOnceHostExternals;
   /** Named definition export; defaults to definition. */
   readonly definitionExport?: string;
+}
+
+/** Compiler-side trusted execution options, including optional v2 asset URL resolution. */
+export interface InstantiateTrustedComponentPackageOptions
+  extends InstantiateTrustedBundleOptions {
+  /** Resolve generated file-loader imports when executing a v2 package in this Node toolchain. */
+  readonly resolveAssetUrl?: (asset: ComponentOnceCompiledAsset) => string;
 }
 
 /** Error raised when a high-level package builder cannot find a valid definition export. */
@@ -113,18 +170,25 @@ export class ComponentOncePackageManifestMismatchError extends Error {
  */
 export function createTrustedComponentPackage(
   input: CreateTrustedComponentPackageInput,
-): ComponentOnceTrustedPackage {
+): ComponentOnceTrustedPackageV2 {
   const renderer = requireNonEmptyString(input.renderer, "renderer");
   const definitionExport = requireNonEmptyString(
     input.definitionExport ?? COMPONENTONCE_DEFAULT_DEFINITION_EXPORT,
     "definitionExport",
   );
+  const assets = [...(input.assets ?? input.bundle.assets ?? [])].sort((left, right) =>
+    left.path.localeCompare(right.path),
+  );
+  const stylesheets = [...(input.stylesheets ?? input.bundle.stylesheets ?? [])].sort();
+  validateEmbeddedAssets(assets, stylesheets, input.bundle.code);
   return deepFreeze({
     format: COMPONENTONCE_TRUSTED_PACKAGE_FORMAT,
     renderer,
     manifest: copyManifest(input.manifest),
     definitionExport,
-    bundle: input.bundle,
+    bundle: stripCompilationOutputs(input.bundle),
+    assets,
+    stylesheets,
   });
 }
 
@@ -136,13 +200,15 @@ export function createTrustedComponentPackage(
  */
 export async function buildTrustedDefinitionPackage(
   input: ComponentOnceDefinitionPackageBuildInput,
-): Promise<ComponentOnceTrustedPackage> {
+): Promise<ComponentOnceTrustedPackageV2> {
   const externals = input.externals ?? {};
   const artifact = await compileTrustedModule({
     source: input.source,
     ...(input.sourceFileName === undefined ? {} : { sourceFileName: input.sourceFileName }),
     ...(input.loader === undefined ? {} : { loader: input.loader }),
     ...(input.resolveDir === undefined ? {} : { resolveDir: input.resolveDir }),
+    ...(input.loaders === undefined ? {} : { loaders: input.loaders }),
+    ...(input.contentTypes === undefined ? {} : { contentTypes: input.contentTypes }),
     externalModules: uniqueStrings([
       ...(input.externalModules ?? []),
       ...Object.keys(externals),
@@ -165,7 +231,7 @@ export async function buildTrustedDefinitionPackage(
  */
 export async function buildTrustedReactPackage(
   input: ComponentOnceReactPackageBuildInput,
-): Promise<ComponentOnceTrustedPackage> {
+): Promise<ComponentOnceTrustedPackageV2> {
   const additionalExternals = Object.keys(input.externals).filter(
     (specifier) =>
       !REACT_EXTERNALS.includes(specifier as (typeof REACT_EXTERNALS)[number]),
@@ -175,6 +241,8 @@ export async function buildTrustedReactPackage(
     ...(input.sourceFileName === undefined ? {} : { sourceFileName: input.sourceFileName }),
     ...(input.loader === undefined ? {} : { loader: input.loader }),
     ...(input.resolveDir === undefined ? {} : { resolveDir: input.resolveDir }),
+    ...(input.loaders === undefined ? {} : { loaders: input.loaders }),
+    ...(input.contentTypes === undefined ? {} : { contentTypes: input.contentTypes }),
     additionalExternalModules: uniqueStrings([
       ...(input.additionalExternalModules ?? []),
       ...additionalExternals,
@@ -199,17 +267,30 @@ export function serializeTrustedComponentPackage(
 /** Parse a persisted trusted package and verify the executable bundle integrity metadata. */
 export function parseTrustedComponentPackage(
   source: string | Uint8Array,
+  configuredLimits: ComponentOncePackageParseLimits = {},
 ): ComponentOnceTrustedPackage {
+  const limits = normalizePackageLimits(configuredLimits);
+  const packageByteLength =
+    typeof source === "string" ? Buffer.byteLength(source, "utf8") : source.byteLength;
+  if (packageByteLength > limits.maxPackageBytes) {
+    throw new TypeError(
+      "ComponentOnce package exceeds maxPackageBytes (" + limits.maxPackageBytes + ").",
+    );
+  }
   const text = typeof source === "string" ? source : decodeUtf8(source);
   const parsed: unknown = JSON.parse(text);
-  if (!isRecord(parsed) || parsed.format !== COMPONENTONCE_TRUSTED_PACKAGE_FORMAT) {
+  if (
+    !isRecord(parsed) ||
+    (parsed.format !== COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V1 &&
+      parsed.format !== COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V2)
+  ) {
     throw new TypeError("Unsupported or invalid ComponentOnce package format.");
   }
   if (!isRecord(parsed.bundle) || parsed.bundle.format !== COMPONENTONCE_TRUSTED_BUNDLE_FORMAT) {
     throw new TypeError("ComponentOnce package does not contain a supported trusted bundle.");
   }
 
-  const bundle = parsed.bundle as unknown as ComponentOnceTrustedBundleArtifact;
+  const bundle = parsed.bundle as unknown as ComponentOnceTrustedBundle;
   if (
     typeof bundle.code !== "string" ||
     typeof bundle.integrity !== "string" ||
@@ -230,14 +311,58 @@ export function parseTrustedComponentPackage(
     throw new TypeError("ComponentOnce package renderer or manifest is invalid.");
   }
 
-  return createTrustedComponentPackage({
-    renderer: parsed.renderer,
-    manifest: parsed.manifest as unknown as ComponentOnceManifest,
+  const renderer = requireNonEmptyString(parsed.renderer, "renderer");
+  const manifest = copyManifest(parsed.manifest as unknown as ComponentOnceManifest);
+  const definitionExport =
+    typeof parsed.definitionExport === "string"
+      ? requireNonEmptyString(parsed.definitionExport, "definitionExport")
+      : COMPONENTONCE_DEFAULT_DEFINITION_EXPORT;
+  if (parsed.format === COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V1) {
+    return deepFreeze({
+      format: COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V1,
+      renderer,
+      manifest,
+      definitionExport,
+      bundle,
+    });
+  }
+  if (!Array.isArray(parsed.assets) || !Array.isArray(parsed.stylesheets)) {
+    throw new TypeError("ComponentOnce v2 package assets or stylesheets are invalid.");
+  }
+  if (parsed.assets.length > limits.maxAssets) {
+    throw new TypeError("ComponentOnce package exceeds maxAssets (" + limits.maxAssets + ").");
+  }
+  let totalAssetBytes = 0;
+  const assets = parsed.assets.map((value, index) => {
+    const asset = parseEmbeddedAsset(value, index);
+    if (asset.byteLength > limits.maxAssetBytes) {
+      throw new TypeError(
+        "ComponentOnce asset " + JSON.stringify(asset.path) + " exceeds maxAssetBytes.",
+      );
+    }
+    totalAssetBytes += asset.byteLength;
+    if (totalAssetBytes > limits.maxTotalAssetBytes) {
+      throw new TypeError(
+        "ComponentOnce package exceeds maxTotalAssetBytes (" +
+          limits.maxTotalAssetBytes +
+          ").",
+      );
+    }
+    return asset;
+  });
+  if (!parsed.stylesheets.every((path) => typeof path === "string")) {
+    throw new TypeError("ComponentOnce v2 package stylesheet references are invalid.");
+  }
+  const stylesheets = [...parsed.stylesheets] as string[];
+  validateEmbeddedAssets(assets, stylesheets, bundle.code);
+  return deepFreeze({
+    format: COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V2,
+    renderer,
+    manifest,
+    definitionExport,
     bundle,
-    definitionExport:
-      typeof parsed.definitionExport === "string"
-        ? parsed.definitionExport
-        : COMPONENTONCE_DEFAULT_DEFINITION_EXPORT,
+    assets,
+    stylesheets,
   });
 }
 
@@ -250,11 +375,42 @@ export function instantiateTrustedComponentPackage<
   TDefinition extends AnyComponentOnceDefinition = AnyComponentOnceDefinition,
 >(
   componentPackage: ComponentOnceTrustedPackage,
-  options: InstantiateTrustedBundleOptions,
+  options: InstantiateTrustedComponentPackageOptions,
 ): TDefinition {
+  let bundleSource: ComponentOnceTrustedBundle | string = componentPackage.bundle;
+  if (componentPackage.format === COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V2) {
+    validateEmbeddedAssets(
+      componentPackage.assets,
+      componentPackage.stylesheets,
+      componentPackage.bundle.code,
+    );
+    const references = collectAssetReferences(componentPackage.bundle.code);
+    if (references.length > 0) {
+      if (options.resolveAssetUrl === undefined) {
+        throw new TypeError(
+          "Executing this v2 ComponentOnce package requires resolveAssetUrl for embedded file imports.",
+        );
+      }
+      const byPath = new Map(componentPackage.assets.map((asset) => [asset.path, asset]));
+      assertTrustedBundleIntegrity(
+        componentPackage.bundle.code,
+        options.expectedIntegrity ?? componentPackage.bundle.integrity,
+      );
+      bundleSource = replaceAssetReferences(
+        componentPackage.bundle.code,
+        byPath,
+        options.resolveAssetUrl,
+      );
+    }
+  }
   const moduleExports = instantiateTrustedBundle<Record<string, unknown>>(
-    componentPackage.bundle,
-    options,
+    bundleSource,
+    bundleSource === componentPackage.bundle
+      ? options
+      : {
+          externals: options.externals,
+          ...(options.sourceName === undefined ? {} : { sourceName: options.sourceName }),
+        },
   );
   const definition = readDefinitionExport(moduleExports, componentPackage.definitionExport);
   if (!sameManifest(componentPackage.manifest, definition.manifest)) {
@@ -271,7 +427,7 @@ function packageTrustedDefinitionArtifact(
   renderer: string,
   externals: ComponentOnceHostExternals,
   definitionExport: string = COMPONENTONCE_DEFAULT_DEFINITION_EXPORT,
-): ComponentOnceTrustedPackage {
+): ComponentOnceTrustedPackageV2 {
   const moduleExports = instantiateTrustedBundle<Record<string, unknown>>(artifact, { externals });
   const definition = readDefinitionExport(moduleExports, definitionExport);
   return createTrustedComponentPackage({
@@ -358,6 +514,186 @@ function hashBundleSource(source: string): {
     byteLength: bytes.byteLength,
     sha256: createHash("sha256").update(bytes).digest("hex"),
   };
+}
+
+function stripCompilationOutputs(
+  bundle: ComponentOnceTrustedBundleArtifact,
+): ComponentOnceTrustedBundle {
+  const { assets: _assets, stylesheets: _stylesheets, ...persisted } = bundle;
+  return persisted;
+}
+
+function parseEmbeddedAsset(value: unknown, index: number): ComponentOnceCompiledAsset {
+  if (
+    !isRecord(value) ||
+    typeof value.path !== "string" ||
+    typeof value.contentType !== "string" ||
+    value.encoding !== "base64" ||
+    typeof value.content !== "string" ||
+    !Number.isSafeInteger(value.byteLength) ||
+    (value.byteLength as number) < 0 ||
+    typeof value.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(value.sha256) ||
+    typeof value.integrity !== "string"
+  ) {
+    throw new TypeError("ComponentOnce asset at index " + index + " is malformed.");
+  }
+  return {
+    path: value.path,
+    contentType: requireNonEmptyString(value.contentType, "asset.contentType"),
+    encoding: "base64",
+    content: value.content,
+    byteLength: value.byteLength as number,
+    sha256: value.sha256,
+    integrity: value.integrity,
+  };
+}
+
+function validateEmbeddedAssets(
+  assets: readonly ComponentOnceCompiledAsset[],
+  stylesheets: readonly string[],
+  bundleCode: string,
+): void {
+  const byPath = new Map<string, ComponentOnceCompiledAsset>();
+  let previousPath: string | undefined;
+  for (const asset of assets) {
+    assertSafeAssetPath(asset.path);
+    if (byPath.has(asset.path)) {
+      throw new TypeError("Duplicate ComponentOnce asset path: " + JSON.stringify(asset.path) + ".");
+    }
+    if (previousPath !== undefined && previousPath.localeCompare(asset.path) > 0) {
+      throw new TypeError("ComponentOnce assets must be sorted by path.");
+    }
+    const bytes = Buffer.from(asset.content, "base64");
+    if (bytes.toString("base64") !== asset.content) {
+      throw new TypeError("ComponentOnce asset " + JSON.stringify(asset.path) + " has invalid base64 bytes.");
+    }
+    const digest = createHash("sha256").update(bytes).digest();
+    const sha256 = digest.toString("hex");
+    const integrity = "sha256-" + digest.toString("base64");
+    if (
+      bytes.byteLength !== asset.byteLength ||
+      sha256 !== asset.sha256 ||
+      integrity !== asset.integrity
+    ) {
+      throw new TypeError(
+        "ComponentOnce asset " + JSON.stringify(asset.path) + " integrity metadata does not match its bytes.",
+      );
+    }
+    byPath.set(asset.path, asset);
+    previousPath = asset.path;
+  }
+
+  const seenStylesheets = new Set<string>();
+  previousPath = undefined;
+  for (const path of stylesheets) {
+    assertSafeAssetPath(path);
+    if (seenStylesheets.has(path)) {
+      throw new TypeError("Duplicate ComponentOnce stylesheet reference: " + JSON.stringify(path) + ".");
+    }
+    const asset = byPath.get(path);
+    if (asset === undefined || asset.contentType !== "text/css") {
+      throw new TypeError(
+        "ComponentOnce stylesheet " + JSON.stringify(path) + " must reference an embedded text/css asset.",
+      );
+    }
+    if (previousPath !== undefined && previousPath.localeCompare(path) > 0) {
+      throw new TypeError("ComponentOnce stylesheets must be sorted by path.");
+    }
+    seenStylesheets.add(path);
+    previousPath = path;
+  }
+
+  validateAssetReferences(bundleCode, byPath);
+  for (const path of stylesheets) {
+    const asset = byPath.get(path)!;
+    validateAssetReferences(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(asset.content, "base64")), byPath);
+  }
+}
+
+function validateAssetReferences(
+  source: string,
+  assets: ReadonlyMap<string, ComponentOnceCompiledAsset>,
+): void {
+  for (const referencedPath of collectAssetReferences(source)) {
+    if (!assets.has(referencedPath)) {
+      throw new TypeError(
+        "ComponentOnce generated asset reference " + JSON.stringify(referencedPath) + " is missing.",
+      );
+    }
+  }
+}
+
+function collectAssetReferences(source: string): string[] {
+  const references: string[] = [];
+  let offset = 0;
+  while (true) {
+    const marker = source.indexOf(COMPONENTONCE_ASSET_URL_PREFIX, offset);
+    if (marker < 0) return references;
+    let start = marker + COMPONENTONCE_ASSET_URL_PREFIX.length;
+    if (source[start] === "/") start += 1;
+    let end = start;
+    while (end < source.length && /[A-Za-z0-9._/-]/u.test(source[end]!)) end += 1;
+    const path = source.slice(start, end);
+    assertSafeAssetPath(path);
+    references.push(path);
+    offset = end;
+  }
+}
+
+function replaceAssetReferences(
+  source: string,
+  assets: ReadonlyMap<string, ComponentOnceCompiledAsset>,
+  resolveAssetUrl: (asset: ComponentOnceCompiledAsset) => string,
+): string {
+  let output = source;
+  for (const path of collectAssetReferences(source)) {
+    const asset = assets.get(path);
+    if (asset === undefined) {
+      throw new TypeError(
+        "ComponentOnce generated asset reference " + JSON.stringify(path) + " is missing.",
+      );
+    }
+    const url = resolveAssetUrl(asset);
+    if (url.length === 0 || /[\0\r\n\s"'()\\]/u.test(url)) {
+      throw new TypeError(
+        "Asset URL resolver returned an unsafe generated-token URL for " +
+          JSON.stringify(path) +
+          ".",
+      );
+    }
+    output = output.split(COMPONENTONCE_ASSET_URL_PREFIX + "/" + path).join(url);
+    output = output.split(COMPONENTONCE_ASSET_URL_PREFIX + path).join(url);
+  }
+  return output;
+}
+
+function assertSafeAssetPath(path: string): void {
+  if (
+    path.length === 0 ||
+    path.startsWith("/") ||
+    path.endsWith("/") ||
+    path.includes("\\") ||
+    !/^[A-Za-z0-9._/-]+$/u.test(path) ||
+    path.split("/").some((segment) => segment === "" || segment === "." || segment === "..")
+  ) {
+    throw new TypeError("Unsafe ComponentOnce asset path: " + JSON.stringify(path) + ".");
+  }
+}
+
+function normalizePackageLimits(
+  configured: ComponentOncePackageParseLimits,
+): Required<ComponentOncePackageParseLimits> {
+  const limits = {
+    ...DEFAULT_PACKAGE_LIMITS,
+    ...configured,
+  } as Required<ComponentOncePackageParseLimits>;
+  for (const [name, value] of Object.entries(limits)) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new TypeError(name + " must be a non-negative safe integer.");
+    }
+  }
+  return limits;
 }
 
 function deepFreeze<T>(value: T): T {
