@@ -177,9 +177,11 @@ export function createTrustedComponentPackage(
     "definitionExport",
   );
   const assets = [...(input.assets ?? input.bundle.assets ?? [])].sort((left, right) =>
-    left.path.localeCompare(right.path),
+    compareStrings(left.path, right.path),
   );
-  const stylesheets = [...(input.stylesheets ?? input.bundle.stylesheets ?? [])].sort();
+  const stylesheets = [...(input.stylesheets ?? input.bundle.stylesheets ?? [])].sort(
+    compareStrings,
+  );
   validateEmbeddedAssets(assets, stylesheets, input.bundle.code);
   return deepFreeze({
     format: COMPONENTONCE_TRUSTED_PACKAGE_FORMAT,
@@ -541,13 +543,24 @@ function parseEmbeddedAsset(value: unknown, index: number): ComponentOnceCompile
   }
   return {
     path: value.path,
-    contentType: requireNonEmptyString(value.contentType, "asset.contentType"),
+    contentType: requireContentType(value.contentType),
     encoding: "base64",
     content: value.content,
     byteLength: value.byteLength as number,
     sha256: value.sha256,
     integrity: value.integrity,
   };
+}
+
+function requireContentType(value: string): string {
+  if (
+    value.trim() === "" ||
+    value !== value.trim() ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    throw new TypeError("asset.contentType must be a non-empty printable string.");
+  }
+  return value;
 }
 
 function decodedBase64ByteLength(value: string): number {
@@ -570,10 +583,11 @@ function validateEmbeddedAssets(
   let previousPath: string | undefined;
   for (const asset of assets) {
     assertSafeAssetPath(asset.path);
+    requireContentType(asset.contentType);
     if (byPath.has(asset.path)) {
       throw new TypeError("Duplicate ComponentOnce asset path: " + JSON.stringify(asset.path) + ".");
     }
-    if (previousPath !== undefined && previousPath.localeCompare(asset.path) > 0) {
+    if (previousPath !== undefined && compareStrings(previousPath, asset.path) > 0) {
       throw new TypeError("ComponentOnce assets must be sorted by path.");
     }
     const bytes = Buffer.from(asset.content, "base64");
@@ -609,7 +623,7 @@ function validateEmbeddedAssets(
         "ComponentOnce stylesheet " + JSON.stringify(path) + " must reference an embedded text/css asset.",
       );
     }
-    if (previousPath !== undefined && previousPath.localeCompare(path) > 0) {
+    if (previousPath !== undefined && compareStrings(previousPath, path) > 0) {
       throw new TypeError("ComponentOnce stylesheets must be sorted by path.");
     }
     seenStylesheets.add(path);
@@ -666,7 +680,7 @@ function replaceAssetReferences(
       );
     }
     const url = resolveAssetUrl(asset);
-    if (url.length === 0 || /[\0\r\n\s"'()\\]/u.test(url)) {
+    if (url.length === 0 || /[\u0000-\u0020\u007f\s"'()\\]/u.test(url)) {
       throw new TypeError(
         "Asset URL resolver returned an unsafe generated-token URL for " +
           JSON.stringify(reference.path) +
@@ -727,4 +741,8 @@ function deepFreeze<T>(value: T): T {
     Object.freeze(value);
   }
   return value;
+}
+
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }

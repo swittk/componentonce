@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ComponentOnceIntegrityError,
   ComponentOnceMissingExternalError,
@@ -290,6 +290,21 @@ describe("browser-safe trusted runtime", () => {
     ).toThrow();
   });
 
+  it("enforces UTF-8 package byte limits before allocating an encoded copy", () => {
+    const encode = vi
+      .spyOn(TextEncoder.prototype, "encode")
+      .mockImplementation(() => {
+        throw new Error("TextEncoder.encode must not run before the size rejection");
+      });
+    try {
+      expect(() =>
+        parseTrustedComponentPackage("éé", { maxPackageBytes: 3 }),
+      ).toThrow(/maxPackageBytes/u);
+    } finally {
+      encode.mockRestore();
+    }
+  });
+
   it("parses, prepares, resolves, mounts, and releases v2 package assets", async () => {
     const parsed = parseTrustedComponentPackage(
       JSON.stringify(await createAssetPackage()),
@@ -361,6 +376,13 @@ describe("browser-safe trusted runtime", () => {
     expect(() => parseTrustedComponentPackage(JSON.stringify(duplicate))).toThrow(
       /Duplicate ComponentOnce asset path/u,
     );
+
+    const invalidContentType = structuredClone(valid);
+    (invalidContentType.assets[0] as { contentType: string }).contentType =
+      "image/svg+xml\u0001";
+    expect(() =>
+      parseTrustedComponentPackage(JSON.stringify(invalidContentType)),
+    ).toThrow(/contentType/u);
 
     const missing = structuredClone(valid);
     (missing.assets as ComponentOnceEmbeddedAsset[]).splice(1, 1);
@@ -444,6 +466,64 @@ describe("browser-safe trusted runtime", () => {
       URL.createObjectURL = originalCreate;
       URL.revokeObjectURL = originalRevoke;
     }
+  });
+
+  it("rejects execution and URL reads after prepared assets are disposed", async () => {
+    const parsed = parseTrustedComponentPackage(
+      JSON.stringify(await createAssetPackage()),
+    );
+    if (parsed.format !== "componentonce.trusted-package.v2") throw new Error("expected v2");
+    const released: string[] = [];
+    const prepared = await prepareTrustedComponentPackageAssets(parsed, {
+      resolveAssetUrl: (asset) => "https://assets.example/" + asset.path,
+      releaseAssetUrl: (asset) => released.push(asset.path),
+    });
+
+    prepared.dispose();
+
+    expect(() => prepared.resolveAssetUrl("assets/logo.svg")).toThrow(/disposed/u);
+    await expect(
+      instantiateTrustedComponentPackage(parsed, {
+        externals: {},
+        preparedAssets: prepared,
+      }),
+    ).rejects.toThrow(/live assets/u);
+    expect(released.sort()).toEqual(["assets/font.woff2", "assets/logo.svg"]);
+  });
+
+  it("attempts every URL release even when one releaser throws", async () => {
+    const parsed = parseTrustedComponentPackage(
+      JSON.stringify(await createAssetPackage()),
+    );
+    if (parsed.format !== "componentonce.trusted-package.v2") throw new Error("expected v2");
+    const attempted: string[] = [];
+    const prepared = await prepareTrustedComponentPackageAssets(parsed, {
+      resolveAssetUrl: (asset) => "https://assets.example/" + asset.path,
+      releaseAssetUrl: (asset) => {
+        attempted.push(asset.path);
+        if (asset.path.endsWith("font.woff2")) throw new Error("release failed");
+      },
+    });
+
+    expect(() => prepared.dispose()).toThrow(AggregateError);
+    expect(attempted).toEqual(["assets/font.woff2", "assets/logo.svg"]);
+    expect(() => prepared.resolveAssetUrl("assets/logo.svg")).toThrow(/disposed/u);
+  });
+
+  it("rejects control characters in resolved URLs and rolls back the lease", async () => {
+    const parsed = parseTrustedComponentPackage(
+      JSON.stringify(await createAssetPackage()),
+    );
+    if (parsed.format !== "componentonce.trusted-package.v2") throw new Error("expected v2");
+    const released: string[] = [];
+
+    await expect(
+      prepareTrustedComponentPackageAssets(parsed, {
+        resolveAssetUrl: (asset) => "https://assets.example/\u0001" + asset.path,
+        releaseAssetUrl: (asset) => released.push(asset.path),
+      }),
+    ).rejects.toThrow(/unsafe generated-token URL/u);
+    expect(released).toEqual(["assets/font.woff2"]);
   });
 
   it("releases every created URL once when stylesheet preparation fails", async () => {

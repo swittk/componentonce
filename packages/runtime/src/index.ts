@@ -122,11 +122,11 @@ export interface ComponentOnceStyleMount {
 
 /** Verified package resources that can be shared by multiple mounts. */
 export interface ComponentOncePreparedPackageAssets {
-  /** Return the prepared host URL for one exact embedded path. */
+  /** Return the prepared host URL for one exact non-stylesheet embedded path. */
   resolveAssetUrl(path: string): string;
   /** Attach package styles once per actual Document or ShadowRoot and return a lease. */
   mountStyles(root: Document | ShadowRoot): ComponentOnceStyleMount;
-  /** Stop accepting mounts and release URLs after all outstanding style leases end. */
+  /** Stop URL reads, execution, and mounts, then release URLs after all leases end. */
   dispose(): void;
 }
 
@@ -214,7 +214,10 @@ export function parseTrustedComponentPackage(
   configuredLimits: ComponentOncePackageParseLimits = {},
 ): ComponentOnceTrustedPackage {
   const limits = normalizeLimits(configuredLimits);
-  const packageBytes = typeof source === "string" ? new TextEncoder().encode(source).byteLength : source.byteLength;
+  const packageBytes =
+    typeof source === "string"
+      ? boundedUtf8ByteLength(source, limits.maxPackageBytes)
+      : source.byteLength;
   if (packageBytes > limits.maxPackageBytes) throw new TypeError("ComponentOnce package exceeds maxPackageBytes (" + limits.maxPackageBytes + ").");
   const text = typeof source === "string" ? source : new TextDecoder("utf-8", { fatal: true }).decode(source);
   const parsed: unknown = JSON.parse(text);
@@ -307,12 +310,27 @@ export async function prepareTrustedComponentPackageAssets(
   const releaseUrlsIfIdle = () => {
     if (!disposed || roots.size !== 0 || urlsReleased) return;
     urlsReleased = true;
+    const releaseErrors: unknown[] = [];
     for (const resolved of resolvedUrls) {
-      options.releaseAssetUrl?.(resolved.asset, resolved.url);
+      try {
+        options.releaseAssetUrl?.(resolved.asset, resolved.url);
+      } catch (error: unknown) {
+        releaseErrors.push(error);
+      }
+    }
+    resolvedUrls.length = 0;
+    urls.clear();
+    styleTexts = [];
+    if (releaseErrors.length > 0) {
+      throw new AggregateError(
+        releaseErrors,
+        "One or more ComponentOnce asset URLs could not be released.",
+      );
     }
   };
   return Object.freeze({
     resolveAssetUrl(path: string): string {
+      if (disposed) throw new Error("ComponentOnce prepared assets have been disposed.");
       const url = urls.get(path);
       if (url === undefined) throw new TypeError("No prepared ComponentOnce asset URL for " + JSON.stringify(path) + ".");
       return url;
@@ -324,13 +342,33 @@ export async function prepareTrustedComponentPackageAssets(
         const ownerDocument = isDocument(root) ? root : root.ownerDocument;
         const parent = isDocument(root) ? root.head ?? root.documentElement : root;
         if (parent === null) throw new TypeError("ComponentOnce stylesheet target has no attachment root.");
-        const nodes = styleTexts.map((stylesheet) => {
-          const node = ownerDocument.createElement("style");
-          node.setAttribute("data-componentonce-style", stylesheet.path);
-          node.textContent = stylesheet.text;
-          parent.appendChild(node);
-          return node;
-        });
+        const nodes: HTMLStyleElement[] = [];
+        try {
+          for (const stylesheet of styleTexts) {
+            const node = ownerDocument.createElement("style");
+            node.setAttribute("data-componentonce-style", stylesheet.path);
+            node.textContent = stylesheet.text;
+            nodes.push(node);
+            parent.appendChild(node);
+          }
+        } catch (error: unknown) {
+          const rollbackErrors: unknown[] = [];
+          for (const node of [...nodes].reverse()) {
+            try {
+              node.remove();
+            } catch (rollbackError: unknown) {
+              rollbackErrors.push(rollbackError);
+            }
+          }
+          if (rollbackErrors.length > 0) {
+            throw new AggregateError(
+              [error, ...rollbackErrors],
+              "ComponentOnce stylesheet mounting failed and rollback was incomplete.",
+              { cause: error },
+            );
+          }
+          throw error;
+        }
         entry = { count: 0, nodes };
         roots.set(root, entry);
       }
@@ -343,9 +381,26 @@ export async function prepareTrustedComponentPackageAssets(
         if (current === undefined) return;
         current.count -= 1;
         if (current.count === 0) {
-          for (const node of current.nodes) node.remove();
+          const cleanupErrors: unknown[] = [];
+          for (const node of current.nodes) {
+            try {
+              node.remove();
+            } catch (error: unknown) {
+              cleanupErrors.push(error);
+            }
+          }
           roots.delete(root);
-          releaseUrlsIfIdle();
+          try {
+            releaseUrlsIfIdle();
+          } catch (error: unknown) {
+            cleanupErrors.push(error);
+          }
+          if (cleanupErrors.length > 0) {
+            throw new AggregateError(
+              cleanupErrors,
+              "One or more ComponentOnce mounted resources could not be released.",
+            );
+          }
         }
       } });
     },
@@ -356,6 +411,7 @@ export async function prepareTrustedComponentPackageAssets(
     },
     [PREPARED_PACKAGE]: componentPackage,
     [PREPARED_URLS]: urls,
+    [PREPARED_IS_ACTIVE]: () => !disposed,
   } as ComponentOncePreparedPackageAssets & PreparedInternals);
 }
 
@@ -399,7 +455,11 @@ export async function instantiateTrustedComponentPackage<TDefinition extends Any
   let code = componentPackage.bundle.code;
   if (componentPackage.format === COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V2) {
     const prepared = options.preparedAssets as (ComponentOncePreparedPackageAssets & Partial<PreparedInternals>) | undefined;
-    if (prepared?.[PREPARED_PACKAGE] !== componentPackage || prepared[PREPARED_URLS] === undefined) throw new TypeError("This v2 ComponentOnce package must be instantiated with assets prepared from the same parsed package object.");
+    if (
+      prepared?.[PREPARED_PACKAGE] !== componentPackage ||
+      prepared[PREPARED_URLS] === undefined ||
+      prepared[PREPARED_IS_ACTIVE]?.() !== true
+    ) throw new TypeError("This v2 ComponentOnce package must be instantiated with live assets prepared from the same parsed package object.");
     code = replaceAssetReferences(code, prepared[PREPARED_URLS]);
   } else {
     await verifyTrustedComponentPackage(componentPackage);
@@ -413,9 +473,11 @@ export async function instantiateTrustedComponentPackage<TDefinition extends Any
 
 const PREPARED_PACKAGE: unique symbol = Symbol("ComponentOnce prepared package");
 const PREPARED_URLS: unique symbol = Symbol("ComponentOnce prepared URLs");
+const PREPARED_IS_ACTIVE: unique symbol = Symbol("ComponentOnce prepared assets are active");
 interface PreparedInternals {
   readonly [PREPARED_PACKAGE]: ComponentOnceTrustedPackageV2;
   readonly [PREPARED_URLS]: ReadonlyMap<string, string>;
+  readonly [PREPARED_IS_ACTIVE]: () => boolean;
 }
 
 function instantiateCommonJs(code: string, options: InstantiateTrustedComponentOptions): unknown {
@@ -441,7 +503,12 @@ function parseAsset(value: unknown, index: number): ComponentOnceEmbeddedAsset {
   assertSafeAssetPath(value.path);
   const decodedByteLength = decodedBase64ByteLength(value.content);
   if (decodedByteLength !== value.byteLength) throw new TypeError("ComponentOnce asset " + JSON.stringify(value.path) + " byteLength does not match its bytes.");
-  return Object.freeze({ path: value.path, contentType: requireNonEmptyString(value.contentType, "asset.contentType"), encoding: "base64", content: value.content, byteLength: value.byteLength as number, sha256: value.sha256, integrity: value.integrity });
+  return Object.freeze({ path: value.path, contentType: requireContentType(value.contentType), encoding: "base64", content: value.content, byteLength: value.byteLength as number, sha256: value.sha256, integrity: value.integrity });
+}
+
+function requireContentType(value: string): string {
+  if (value.trim() === "" || value !== value.trim() || /[\u0000-\u001f\u007f]/u.test(value)) throw new TypeError("asset.contentType must be a non-empty printable string.");
+  return value;
 }
 
 function validateAssetTable(bundleCode: string, assets: readonly ComponentOnceEmbeddedAsset[], stylesheets: readonly string[]): void {
@@ -449,7 +516,7 @@ function validateAssetTable(bundleCode: string, assets: readonly ComponentOnceEm
   let previous: string | undefined;
   for (const asset of assets) {
     if (byPath.has(asset.path)) throw new TypeError("Duplicate ComponentOnce asset path: " + JSON.stringify(asset.path) + ".");
-    if (previous !== undefined && previous.localeCompare(asset.path) > 0) throw new TypeError("ComponentOnce assets must be sorted by path.");
+    if (previous !== undefined && compareStrings(previous, asset.path) > 0) throw new TypeError("ComponentOnce assets must be sorted by path.");
     byPath.set(asset.path, asset);
     previous = asset.path;
   }
@@ -458,7 +525,7 @@ function validateAssetTable(bundleCode: string, assets: readonly ComponentOnceEm
   for (const path of stylesheets) {
     assertSafeAssetPath(path);
     if (seenStylesheets.has(path)) throw new TypeError("Duplicate ComponentOnce stylesheet reference: " + JSON.stringify(path) + ".");
-    if (previous !== undefined && previous.localeCompare(path) > 0) throw new TypeError("ComponentOnce stylesheets must be sorted by path.");
+    if (previous !== undefined && compareStrings(previous, path) > 0) throw new TypeError("ComponentOnce stylesheets must be sorted by path.");
     const asset = byPath.get(path);
     if (asset === undefined || asset.contentType !== "text/css") throw new TypeError("ComponentOnce stylesheet " + JSON.stringify(path) + " must reference an embedded text/css asset.");
     seenStylesheets.add(path);
@@ -516,7 +583,7 @@ function assertSafeAssetPath(path: string): void {
 }
 
 function assertSafeResolvedUrl(url: string, path: string): void {
-  if (typeof url !== "string" || url.length === 0 || /[\0\r\n\s"'()\\]/u.test(url)) throw new TypeError("Asset URL resolver returned an unsafe generated-token URL for " + JSON.stringify(path) + ".");
+  if (typeof url !== "string" || url.length === 0 || /[\u0000-\u0020\u007f\s"'()\\]/u.test(url)) throw new TypeError("Asset URL resolver returned an unsafe generated-token URL for " + JSON.stringify(path) + ".");
 }
 
 async function assertBytesIntegrity(path: string, bytes: string | Uint8Array, expected: { readonly byteLength: number; readonly sha256: string; readonly integrity: string }): Promise<void> {
@@ -584,6 +651,31 @@ function decodedBase64ByteLength(value: string): number {
   return (value.length / 4) * 3 - padding;
 }
 
+function boundedUtf8ByteLength(value: string, maximum: number): number {
+  let byteLength = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const first = value.charCodeAt(index);
+    if (first <= 0x7f) {
+      byteLength += 1;
+    } else if (first <= 0x7ff) {
+      byteLength += 2;
+    } else if (
+      first >= 0xd800 &&
+      first <= 0xdbff &&
+      index + 1 < value.length &&
+      value.charCodeAt(index + 1) >= 0xdc00 &&
+      value.charCodeAt(index + 1) <= 0xdfff
+    ) {
+      byteLength += 4;
+      index += 1;
+    } else {
+      byteLength += 3;
+    }
+    if (byteLength > maximum) return byteLength;
+  }
+  return byteLength;
+}
+
 function encodeBase64(bytes: Uint8Array): string {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   let output = "";
@@ -605,4 +697,8 @@ function deepFreeze<T>(value: T): T {
     Object.freeze(value);
   }
   return value;
+}
+
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }

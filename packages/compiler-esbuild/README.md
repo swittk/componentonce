@@ -43,6 +43,8 @@ import logoUrl from "./logo.svg";
 // CSS may use @import and url("./font.woff2").
 ```
 
+CSS file references may omit `./` and may include query or fragment suffixes; the emitted package keeps the suffix while resolving the exact file bytes. Root-relative and remote CSS asset URLs are rejected because they are not portable package assets. Explicit `data:` URLs remain inline.
+
 Common image and font extensions use esbuild's `file` loader by default. Configure any other extension instead of relying on a fixed media whitelist:
 
 ```sh
@@ -148,6 +150,8 @@ Preparation verifies the executable bundle and every embedded asset before produ
 The v2 package has sorted `assets` entries with safe relative `path`, `contentType`, exact byte length, SHA-256/SRI values, and base64 bytes. `stylesheets` contains exact references into that table. Generated `componentonce-asset:` tokens are the only strings the runtime resolves. Node tooling may instantiate with only `{ externals }` for manifest/build inspection; file imports remain deliberate tokens until a URL resolver is supplied. Existing v1 packages without assets remain readable and executable.
 
 Plain `.css` is global CSS. It is not automatically isolated. Prefer `.module.css` for scoped class names; ComponentOnce adds a deterministic namespace derived from the portable input/dependency graph, so changing a referenced image, font, or imported style also changes local class names while identical packages in different absolute directories remain reproducible. A host may instead mount styles in a `ShadowRoot`, but Shadow DOM is never forced.
+
+Build output is independent of the process working directory. Absolute `sourceFileName` values are reduced to their basename, and build-machine paths are not persisted in bundle comments, source maps, or metafile data.
 
 ## Low-level compilation
 
