@@ -134,7 +134,7 @@ export interface ComponentOncePreparedPackageAssets {
 export interface ComponentOnceBrowserBlobAssetUrlResolver {
   readonly resolveAssetUrl: ComponentOnceAssetUrlResolver;
   readonly releaseAssetUrl: ComponentOnceAssetUrlReleaser;
-  /** Revoke all remaining Blob URLs when the host has released every prepared package. */
+  /** Force-revoke remaining URLs; call only after every prepared package and style lease is released. */
   dispose(): void;
 }
 
@@ -156,8 +156,22 @@ export class ComponentOnceIntegrityError extends Error {
   public readonly path: string;
   public readonly expectedSha256: string;
   public readonly actualSha256: string;
-  public constructor(path: string, expectedSha256: string, actualSha256: string) {
-    super("ComponentOnce integrity mismatch for " + JSON.stringify(path) + ". Expected SHA-256 " + JSON.stringify(expectedSha256) + " but received " + JSON.stringify(actualSha256) + ".");
+  public constructor(expectedSha256: string, actualSha256: string, path = "bundle") {
+    super(
+      path === "bundle"
+        ? "Trusted bundle integrity mismatch. Expected SHA-256 " +
+            JSON.stringify(expectedSha256) +
+            " but received " +
+            JSON.stringify(actualSha256) +
+            "."
+        : "ComponentOnce integrity mismatch for " +
+            JSON.stringify(path) +
+            ". Expected SHA-256 " +
+            JSON.stringify(expectedSha256) +
+            " but received " +
+            JSON.stringify(actualSha256) +
+            ".",
+    );
     this.name = new.target.name;
     this.path = path;
     this.expectedSha256 = expectedSha256;
@@ -249,26 +263,53 @@ export async function prepareTrustedComponentPackageAssets(
   const stylesheetPaths = new Set(componentPackage.stylesheets);
   const decoded = new Map<string, ComponentOnceResolvedAsset>();
   const urls = new Map<string, string>();
-  for (const asset of componentPackage.assets) {
-    const resolved: ComponentOnceResolvedAsset = Object.freeze({ path: asset.path, contentType: asset.contentType, byteLength: asset.byteLength, sha256: asset.sha256, integrity: asset.integrity, bytes: decodeBase64(asset.content) });
-    decoded.set(asset.path, resolved);
-    if (!stylesheetPaths.has(asset.path)) {
-      const url = await options.resolveAssetUrl(resolved);
-      assertSafeResolvedUrl(url, asset.path);
-      urls.set(asset.path, url);
+  const resolvedUrls: Array<{
+    readonly asset: ComponentOnceResolvedAsset;
+    readonly url: string;
+  }> = [];
+  let styleTexts: Array<{ readonly path: string; readonly text: string }>;
+  try {
+    for (const asset of componentPackage.assets) {
+      const resolved: ComponentOnceResolvedAsset = Object.freeze({ path: asset.path, contentType: asset.contentType, byteLength: asset.byteLength, sha256: asset.sha256, integrity: asset.integrity, bytes: decodeBase64(asset.content) });
+      decoded.set(asset.path, resolved);
+      if (!stylesheetPaths.has(asset.path)) {
+        const url = await options.resolveAssetUrl(resolved);
+        resolvedUrls.push({ asset: resolved, url });
+        assertSafeResolvedUrl(url, asset.path);
+        urls.set(asset.path, url);
+      }
     }
+    styleTexts = componentPackage.stylesheets.map((path) => {
+      const asset = decoded.get(path)!;
+      return { path, text: replaceAssetReferences(new TextDecoder("utf-8", { fatal: true }).decode(asset.bytes), urls) };
+    });
+  } catch (error: unknown) {
+    const rollbackErrors: unknown[] = [];
+    for (const resolved of [...resolvedUrls].reverse()) {
+      try {
+        options.releaseAssetUrl?.(resolved.asset, resolved.url);
+      } catch (rollbackError: unknown) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...rollbackErrors],
+        "ComponentOnce asset preparation failed and one or more URL rollbacks also failed.",
+        { cause: error },
+      );
+    }
+    throw error;
   }
-  const styleTexts = componentPackage.stylesheets.map((path) => {
-    const asset = decoded.get(path)!;
-    return { path, text: replaceAssetReferences(new TextDecoder("utf-8", { fatal: true }).decode(asset.bytes), urls) };
-  });
   const roots = new Map<Document | ShadowRoot, { count: number; nodes: HTMLStyleElement[] }>();
   let disposed = false;
   let urlsReleased = false;
   const releaseUrlsIfIdle = () => {
     if (!disposed || roots.size !== 0 || urlsReleased) return;
     urlsReleased = true;
-    for (const [path, url] of urls) options.releaseAssetUrl?.(decoded.get(path)!, url);
+    for (const resolved of resolvedUrls) {
+      options.releaseAssetUrl?.(resolved.asset, resolved.url);
+    }
   };
   return Object.freeze({
     resolveAssetUrl(path: string): string {
@@ -398,8 +439,8 @@ function parseBundle(value: unknown): ComponentOnceRuntimeBundle {
 function parseAsset(value: unknown, index: number): ComponentOnceEmbeddedAsset {
   if (!isRecord(value) || typeof value.path !== "string" || typeof value.contentType !== "string" || value.encoding !== "base64" || typeof value.content !== "string" || !isNonNegativeSafeInteger(value.byteLength) || typeof value.sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(value.sha256) || typeof value.integrity !== "string" || !/^sha256-[A-Za-z0-9+/]+={0,2}$/u.test(value.integrity)) throw new TypeError("ComponentOnce asset at index " + index + " is malformed.");
   assertSafeAssetPath(value.path);
-  const bytes = decodeBase64(value.content);
-  if (bytes.byteLength !== value.byteLength) throw new TypeError("ComponentOnce asset " + JSON.stringify(value.path) + " byteLength does not match its bytes.");
+  const decodedByteLength = decodedBase64ByteLength(value.content);
+  if (decodedByteLength !== value.byteLength) throw new TypeError("ComponentOnce asset " + JSON.stringify(value.path) + " byteLength does not match its bytes.");
   return Object.freeze({ path: value.path, contentType: requireNonEmptyString(value.contentType, "asset.contentType"), encoding: "base64", content: value.content, byteLength: value.byteLength as number, sha256: value.sha256, integrity: value.integrity });
 }
 
@@ -432,15 +473,17 @@ function validateReferences(source: string, assets: ReadonlyMap<string, Componen
 }
 
 function replaceAssetReferences(source: string, urls: ReadonlyMap<string, string>): string {
-  let output = source;
-  for (const path of collectAssetReferences(source)) {
-    const url = urls.get(path);
-    if (url === undefined) throw new TypeError("No prepared ComponentOnce asset URL for " + JSON.stringify(path) + ".");
-    output = output.split(COMPONENTONCE_ASSET_URL_PREFIX + "/" + path).join(url);
-    output = output.split(COMPONENTONCE_ASSET_URL_PREFIX + path).join(url);
+  let output = "";
+  let cursor = 0;
+  while (true) {
+    const marker = source.indexOf(COMPONENTONCE_ASSET_URL_PREFIX, cursor);
+    if (marker < 0) return output + source.slice(cursor);
+    const reference = readAssetReference(source, marker);
+    const url = urls.get(reference.path);
+    if (url === undefined) throw new TypeError("No prepared ComponentOnce asset URL for " + JSON.stringify(reference.path) + ".");
+    output += source.slice(cursor, marker) + url;
+    cursor = reference.end;
   }
-  if (output.includes(COMPONENTONCE_ASSET_URL_PREFIX)) throw new TypeError("Unresolved ComponentOnce asset reference remains after preparation.");
-  return output;
 }
 
 function collectAssetReferences(source: string): string[] {
@@ -449,15 +492,23 @@ function collectAssetReferences(source: string): string[] {
   while (true) {
     const marker = source.indexOf(COMPONENTONCE_ASSET_URL_PREFIX, offset);
     if (marker < 0) return [...references];
-    let start = marker + COMPONENTONCE_ASSET_URL_PREFIX.length;
-    if (source[start] === "/") start += 1;
-    let end = start;
-    while (end < source.length && /[A-Za-z0-9._/-]/u.test(source[end]!)) end += 1;
-    const path = source.slice(start, end);
-    assertSafeAssetPath(path);
-    references.add(path);
-    offset = end;
+    const reference = readAssetReference(source, marker);
+    references.add(reference.path);
+    offset = reference.end;
   }
+}
+
+function readAssetReference(
+  source: string,
+  marker: number,
+): { readonly path: string; readonly end: number } {
+  let start = marker + COMPONENTONCE_ASSET_URL_PREFIX.length;
+  if (source[start] === "/") start += 1;
+  let end = start;
+  while (end < source.length && /[A-Za-z0-9._/-]/u.test(source[end]!)) end += 1;
+  const path = source.slice(start, end);
+  assertSafeAssetPath(path);
+  return { path, end };
 }
 
 function assertSafeAssetPath(path: string): void {
@@ -470,7 +521,7 @@ function assertSafeResolvedUrl(url: string, path: string): void {
 
 async function assertBytesIntegrity(path: string, bytes: string | Uint8Array, expected: { readonly byteLength: number; readonly sha256: string; readonly integrity: string }): Promise<void> {
   const calculated = await calculateTrustedBundleSha256(bytes);
-  if (calculated.byteLength !== expected.byteLength || calculated.sha256 !== expected.sha256 || calculated.integrity !== expected.integrity) throw new ComponentOnceIntegrityError(path, expected.sha256, calculated.sha256);
+  if (calculated.byteLength !== expected.byteLength || calculated.sha256 !== expected.sha256 || calculated.integrity !== expected.integrity) throw new ComponentOnceIntegrityError(expected.sha256, calculated.sha256, path);
 }
 
 function normalizeLimits(configured: ComponentOncePackageParseLimits): Required<ComponentOncePackageParseLimits> {
@@ -514,10 +565,9 @@ function isDocument(root: Document | ShadowRoot): root is Document { return root
 function sanitizeSourceName(value: string): string { return value.replace(/[\r\n\u2028\u2029]/gu, "_"); }
 
 function decodeBase64(value: string): Uint8Array {
-  if (value.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value)) throw new TypeError("ComponentOnce asset content is not canonical base64.");
+  const decodedLength = decodedBase64ByteLength(value);
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
-  const bytes = new Uint8Array((value.length / 4) * 3 - padding);
+  const bytes = new Uint8Array(decodedLength);
   let output = 0;
   for (let index = 0; index < value.length; index += 4) {
     const combined = (alphabet.indexOf(value[index]!) << 18) | (alphabet.indexOf(value[index + 1]!) << 12) | ((value[index + 2] === "=" ? 0 : alphabet.indexOf(value[index + 2]!)) << 6) | (value[index + 3] === "=" ? 0 : alphabet.indexOf(value[index + 3]!));
@@ -526,6 +576,12 @@ function decodeBase64(value: string): Uint8Array {
     if (output < bytes.length) bytes[output++] = combined & 255;
   }
   return bytes;
+}
+
+function decodedBase64ByteLength(value: string): number {
+  if (value.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value)) throw new TypeError("ComponentOnce asset content is not canonical base64.");
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  return (value.length / 4) * 3 - padding;
 }
 
 function encodeBase64(bytes: Uint8Array): string {

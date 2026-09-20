@@ -385,12 +385,7 @@ export function instantiateTrustedComponentPackage<
       componentPackage.bundle.code,
     );
     const references = collectAssetReferences(componentPackage.bundle.code);
-    if (references.length > 0) {
-      if (options.resolveAssetUrl === undefined) {
-        throw new TypeError(
-          "Executing this v2 ComponentOnce package requires resolveAssetUrl for embedded file imports.",
-        );
-      }
+    if (references.length > 0 && options.resolveAssetUrl !== undefined) {
       const byPath = new Map(componentPackage.assets.map((asset) => [asset.path, asset]));
       assertTrustedBundleIntegrity(
         componentPackage.bundle.code,
@@ -538,6 +533,12 @@ function parseEmbeddedAsset(value: unknown, index: number): ComponentOnceCompile
   ) {
     throw new TypeError("ComponentOnce asset at index " + index + " is malformed.");
   }
+  const decodedByteLength = decodedBase64ByteLength(value.content);
+  if (decodedByteLength !== value.byteLength) {
+    throw new TypeError(
+      "ComponentOnce asset " + JSON.stringify(value.path) + " byteLength does not match its bytes.",
+    );
+  }
   return {
     path: value.path,
     contentType: requireNonEmptyString(value.contentType, "asset.contentType"),
@@ -547,6 +548,17 @@ function parseEmbeddedAsset(value: unknown, index: number): ComponentOnceCompile
     sha256: value.sha256,
     integrity: value.integrity,
   };
+}
+
+function decodedBase64ByteLength(value: string): number {
+  if (
+    value.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value)
+  ) {
+    throw new TypeError("ComponentOnce asset content is not canonical base64.");
+  }
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  return (value.length / 4) * 3 - padding;
 }
 
 function validateEmbeddedAssets(
@@ -630,14 +642,9 @@ function collectAssetReferences(source: string): string[] {
   while (true) {
     const marker = source.indexOf(COMPONENTONCE_ASSET_URL_PREFIX, offset);
     if (marker < 0) return references;
-    let start = marker + COMPONENTONCE_ASSET_URL_PREFIX.length;
-    if (source[start] === "/") start += 1;
-    let end = start;
-    while (end < source.length && /[A-Za-z0-9._/-]/u.test(source[end]!)) end += 1;
-    const path = source.slice(start, end);
-    assertSafeAssetPath(path);
-    references.push(path);
-    offset = end;
+    const reference = readAssetReference(source, marker);
+    references.push(reference.path);
+    offset = reference.end;
   }
 }
 
@@ -646,26 +653,42 @@ function replaceAssetReferences(
   assets: ReadonlyMap<string, ComponentOnceCompiledAsset>,
   resolveAssetUrl: (asset: ComponentOnceCompiledAsset) => string,
 ): string {
-  let output = source;
-  for (const path of collectAssetReferences(source)) {
-    const asset = assets.get(path);
+  let output = "";
+  let cursor = 0;
+  while (true) {
+    const marker = source.indexOf(COMPONENTONCE_ASSET_URL_PREFIX, cursor);
+    if (marker < 0) return output + source.slice(cursor);
+    const reference = readAssetReference(source, marker);
+    const asset = assets.get(reference.path);
     if (asset === undefined) {
       throw new TypeError(
-        "ComponentOnce generated asset reference " + JSON.stringify(path) + " is missing.",
+        "ComponentOnce generated asset reference " + JSON.stringify(reference.path) + " is missing.",
       );
     }
     const url = resolveAssetUrl(asset);
     if (url.length === 0 || /[\0\r\n\s"'()\\]/u.test(url)) {
       throw new TypeError(
         "Asset URL resolver returned an unsafe generated-token URL for " +
-          JSON.stringify(path) +
+          JSON.stringify(reference.path) +
           ".",
       );
     }
-    output = output.split(COMPONENTONCE_ASSET_URL_PREFIX + "/" + path).join(url);
-    output = output.split(COMPONENTONCE_ASSET_URL_PREFIX + path).join(url);
+    output += source.slice(cursor, marker) + url;
+    cursor = reference.end;
   }
-  return output;
+}
+
+function readAssetReference(
+  source: string,
+  marker: number,
+): { readonly path: string; readonly end: number } {
+  let start = marker + COMPONENTONCE_ASSET_URL_PREFIX.length;
+  if (source[start] === "/") start += 1;
+  let end = start;
+  while (end < source.length && /[A-Za-z0-9._/-]/u.test(source[end]!)) end += 1;
+  const path = source.slice(start, end);
+  assertSafeAssetPath(path);
+  return { path, end };
 }
 
 function assertSafeAssetPath(path: string): void {

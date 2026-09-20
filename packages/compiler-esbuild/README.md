@@ -145,9 +145,9 @@ blobs.dispose();
 
 Preparation verifies the executable bundle and every embedded asset before producing URLs or styles. Instantiation verifies that the definition inside the executable bundle still has the same manifest as the package envelope.
 
-The v2 package has sorted `assets` entries with safe relative `path`, `contentType`, exact byte length, SHA-256/SRI values, and base64 bytes. `stylesheets` contains exact references into that table. Generated `componentonce-asset:` tokens are the only strings the runtime resolves. Existing v1 packages without assets remain readable and executable.
+The v2 package has sorted `assets` entries with safe relative `path`, `contentType`, exact byte length, SHA-256/SRI values, and base64 bytes. `stylesheets` contains exact references into that table. Generated `componentonce-asset:` tokens are the only strings the runtime resolves. Node tooling may instantiate with only `{ externals }` for manifest/build inspection; file imports remain deliberate tokens until a URL resolver is supplied. Existing v1 packages without assets remain readable and executable.
 
-Plain `.css` is global CSS. It is not automatically isolated. Prefer `.module.css` for scoped class names; ComponentOnce adds a deterministic content namespace so separately compiled packages with different module contents cannot reuse the same generated class. A host may instead mount styles in a `ShadowRoot`, but Shadow DOM is never forced.
+Plain `.css` is global CSS. It is not automatically isolated. Prefer `.module.css` for scoped class names; ComponentOnce adds a deterministic namespace derived from the portable input/dependency graph, so changing a referenced image, font, or imported style also changes local class names while identical packages in different absolute directories remain reproducible. A host may instead mount styles in a `ShadowRoot`, but Shadow DOM is never forced.
 
 ## Low-level compilation
 
