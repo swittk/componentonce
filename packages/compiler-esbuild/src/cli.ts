@@ -1,8 +1,9 @@
 #!/usr/bin/env node
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { basename, dirname, extname, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   buildTrustedDefinitionPackage,
   buildTrustedReactPackage,
@@ -30,6 +31,21 @@ const DOM_HOST_EXTERNALS = ["@componentonce/dom"] as const;
 
 /** Run the ComponentOnce command line interface with ordinary process arguments. */
 export async function runComponentOnceCli(args: readonly string[]): Promise<void> {
+  if (args[0] === "dev") {
+    // Optional tooling is resolved from the consuming workspace: no dependency cycle.
+    const requireFromConsumer = createRequire(resolve(process.cwd(), "package.json"));
+    let entry: string | undefined;
+    try { entry = requireFromConsumer.resolve("@componentonce/dev"); }
+    catch {
+      // Source-workspace fallback for this monorepo only. Published consumers resolve above.
+      const sibling = resolve(dirname(fileURLToPath(import.meta.url)), "../../dev/dist/index.js");
+      if (existsSync(sibling)) entry = sibling;
+    }
+    if (entry === undefined) throw new Error("Install @componentonce/dev in this workspace to use componentonce dev.");
+    const tooling = await import(pathToFileURL(entry).href) as { runComponentOnceDevCli(args: readonly string[]): Promise<void> };
+    await tooling.runComponentOnceDevCli(args.slice(1));
+    return;
+  }
   if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
     process.stdout.write(usage());
     return;
@@ -238,6 +254,7 @@ function usage(): string {
     "ComponentOnce trusted component builder",
     "",
     "Usage:",
+    "  componentonce dev <entry> [--host <browser-profile.ts>] [--port <port>] (requires @componentonce/dev)",
     "  componentonce build <entry> [options]",
     "",
     "Options:",
