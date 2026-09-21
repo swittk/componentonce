@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { existsSync } from "node:fs";
+import { resolve as resolveEsm } from "import-meta-resolve";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { basename, dirname, extname, resolve } from "node:path";
@@ -219,10 +220,13 @@ async function loadExternals(
   specifiers: readonly string[],
   sourceDir: string,
 ): Promise<Record<string, unknown>> {
-  const resolver = createRequire(pathToFileURL(resolve(sourceDir, "__componentonce_resolve__.mjs")));
+  const parentUrl = pathToFileURL(
+    resolve(sourceDir, "__componentonce_resolve__.mjs"),
+  ).href;
+  const resolver = createRequire(parentUrl);
   const externals: Record<string, unknown> = {};
   for (const specifier of specifiers) {
-    externals[specifier] = await loadExternal(specifier, resolver);
+    externals[specifier] = await loadExternal(specifier, resolver, parentUrl);
   }
   return externals;
 }
@@ -230,12 +234,19 @@ async function loadExternals(
 async function loadExternal(
   specifier: string,
   resolver: NodeJS.Require,
+  parentUrl: string,
 ): Promise<unknown> {
   try {
     return resolver(specifier);
   } catch (error: unknown) {
     if (!canRetryAsEsm(error)) throw error;
-    return import(specifier);
+    let resolved: string;
+    try {
+      resolved = resolveEsm(specifier, parentUrl);
+    } catch {
+      throw error;
+    }
+    return import(resolved);
   }
 }
 
@@ -273,8 +284,13 @@ function usage(): string {
   ].join("\n");
 }
 
-runComponentOnceCli(process.argv.slice(2)).catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write("componentonce: " + message + "\n");
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+) {
+  runComponentOnceCli(process.argv.slice(2)).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write("componentonce: " + message + "\n");
+    process.exitCode = 1;
+  });
+}

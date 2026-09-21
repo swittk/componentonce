@@ -110,7 +110,8 @@ Raw function objects are intentionally rejected inside fixtures because they can
 - host-defined actual/mock callable catalogs for function-valued Props/Payload, with invocation logs;
 - host capabilities and external import list;
 - manifest requirements, bundle size, packaged assets, and compiler/runtime diagnostics;
-- responsive/mobile width presets plus free drag-resize with live width × height;\n- host-defined visual/theme variants (the workbench assumes no Tailwind, class name, CSS-variable, or theme convention);
+- responsive/mobile width presets plus free drag-resize with live width × height;
+- host-defined visual/theme variants (the workbench assumes no Tailwind, class name, CSS-variable, or theme convention);
 - an Export package action that emits a normal componentonce.trusted-package.v2 envelope.
 
 Source dependency edits (TS/JS, CSS/CSS Modules, images/fonts/assets) trigger rebuilds. Successful source updates remount only the preview component, preserving fixture inputs and the workbench shell. Syntax/import/runtime failures keep the last good component mounted, update the diagnostics panel, and show an auto-clearing redbox-style overlay over the preview.
