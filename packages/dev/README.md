@@ -66,11 +66,48 @@ React, react/jsx-runtime, react/jsx-dev-runtime, and @componentonce/react are pi
 
 Use --external exact/specifier for every additional import allowed by the production component compiler.
 
+## Function-valued Props / Payload
+
+ComponentOnce Props and Payload are generic and may legitimately contain functions. The workbench editor itself stays serializable, so a browser host profile provides a named callable catalog and fixtures reference those callables declaratively:
+
+```ts
+export default defineReactDevHost({
+  functions: {
+    openClient: realOpenClient,
+    saveDraft: {
+      mode: "mock",
+      description: "Local no-op save used by this fixture.",
+      call: async (input) => ({ ok: true, input }),
+    },
+  },
+  fixtures: [
+    {
+      name: "Interactive",
+      props: {
+        onOpen: { $componentonceFunction: "openClient" },
+        onSave: {
+          $componentonceFunction: "saveDraft",
+          bind: [{ source: "dev-fixture" }],
+        },
+      },
+      payload: {},
+    },
+  ],
+});
+```
+
+Before ComponentOnce validation/rendering, the preview host resolves those markers to ordinary function values. `bind` supplies optional leading arguments; arguments from the component are appended at call time.
+
+The catalog can point at real application functions or mocks. The workbench shows every available callable and keeps a bounded call log with bound arguments, runtime arguments, and synchronous/async outcomes. Unknown function references fail visibly while retaining the last good preview.
+
+Raw function objects are intentionally rejected inside fixtures because they cannot cross the iframe/editor transport reliably; put them in `functions` and reference them by name instead. These markers are development-fixture syntax only and do not change persisted ComponentOnce package/Props contracts.
+
 ## What the workbench shows
 
 - live component preview in an iframe;
 - Props, Payload, and Context-input JSON kept separate;
 - named fixtures supplied by the real host profile;
+- host-defined actual/mock callable catalogs for function-valued Props/Payload, with invocation logs;
 - host capabilities and external import list;
 - manifest requirements, bundle size, packaged assets, and compiler/runtime diagnostics;
 - responsive/mobile width presets plus free drag-resize with live width × height;\n- host-defined visual/theme variants (the workbench assumes no Tailwind, class name, CSS-variable, or theme convention);

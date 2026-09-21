@@ -15,3 +15,14 @@
 .error-overlay pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:14px;font:11px/1.65 ui-monospace,SFMono-Regular,Consolas,monospace;color:#8f3d2d;max-height:360px;overflow:auto}
 .error-hint{padding:10px 14px;border-top:1px solid #f3d3ca;font-size:10px;color:#95695f;background:#fffaf8}
 @media(max-width:680px){.preview-shell{height:450px}.dimensions{display:none}}
+
+.function-list,.function-calls{display:grid;gap:7px;margin-top:8px}
+.function-catalog-row,.function-call{border:1px solid #e1e7eb;border-radius:6px;padding:8px;background:#fff;min-width:0}
+.function-catalog-row>div,.function-call__head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.function-catalog-row strong,.function-call strong{font:600 10px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}
+.function-catalog-row span,.function-call__head span{font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:#778b98;background:#eef3f5;border-radius:4px;padding:2px 4px}
+.function-catalog-row p{margin:5px 0;color:#71838e;font-size:10px;line-height:1.45}
+.function-catalog-row code,.function-call code{display:block;margin-top:5px;white-space:pre-wrap;overflow-wrap:anywhere;font:9px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;color:#536c79}
+.function-call__result{border-top:1px solid #edf1f3;padding-top:5px;color:#456b5d!important}
+.function-call-toolbar{display:flex;justify-content:flex-end;margin:-2px 0 5px}
+.function-call-toolbar button{padding:3px 7px;font-size:9px}

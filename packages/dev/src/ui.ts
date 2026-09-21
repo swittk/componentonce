@@ -39,6 +39,8 @@ root.innerHTML = `
     <dl class="stats"><div><dt>Revision</dt><dd id="revision">—</dd></div><div><dt>JavaScript</dt><dd id="bundle-size">—</dd></div><div><dt>Assets</dt><dd id="asset-count">—</dd></div></dl>
     <details open><summary>Requirements</summary><pre id="requirements">—</pre></details>
     <details open><summary>Host capabilities</summary><pre id="capabilities">—</pre></details>
+    <details open><summary>Host functions</summary><div id="function-catalog" class="function-list">—</div></details>
+    <details open><summary>Function calls</summary><div class="function-call-toolbar"><button id="clear-calls" type="button">Clear</button></div><div id="function-calls" class="function-calls">No calls yet.</div></details>
     <details open><summary>External imports</summary><pre id="externals">—</pre></details>
     <details open><summary>Packaged assets</summary><div id="assets" class="asset-list">—</div></details>
     <div class="trust-note">LOCAL / TRUSTED CODE<br><span>Preview CSS is isolated in an iframe. This is not a sandbox for untrusted packages.</span></div>
@@ -69,9 +71,69 @@ let sourceDiagnostics: string[] = [];
 let hostDiagnostics: string[] = [];
 let latest: { source: ComponentOnceDevStatus; host: ComponentOnceDevStatus } | undefined;
 let dismissedErrorSignature = "";
+interface FunctionCall {
+  id: number;
+  name: string;
+  mode: string;
+  bound: unknown;
+  args: unknown;
+  status?: string;
+  result?: unknown;
+}
+const functionCalls = new Map<number, FunctionCall>();
+const functionCallOrder: number[] = [];
 const send = (type: string, value?: unknown) => frame.contentWindow?.postMessage({ componentonce: true, type, value }, window.location.origin);
 const display = (id: string, text: string) => { element(id).textContent = text; };
 const formatBytes = (bytes: number) => bytes < 1024 ? bytes + " B" : (bytes / 1024).toFixed(1) + " KB";
+function formatPreviewValue(value: unknown): string {
+  if (value === undefined) return "undefined";
+  try {
+    const json = JSON.stringify(value);
+    return json === undefined ? String(value) : json;
+  } catch {
+    return String(value);
+  }
+}
+
+function renderFunctionCalls() {
+  const container = element("function-calls");
+  if (functionCallOrder.length === 0) {
+    container.textContent = "No calls yet.";
+    return;
+  }
+  container.replaceChildren(
+    ...functionCallOrder.slice(-30).reverse().flatMap((id) => {
+      const call = functionCalls.get(id);
+      if (!call) return [];
+      const row = document.createElement("div");
+      row.className = "function-call";
+      const head = document.createElement("div");
+      head.className = "function-call__head";
+      const name = document.createElement("strong");
+      name.textContent = call.name;
+      const mode = document.createElement("span");
+      mode.textContent = call.mode;
+      head.append(name, mode);
+      const args = document.createElement("code");
+      args.textContent =
+        (Array.isArray(call.bound) && call.bound.length > 0
+          ? "bind " + formatPreviewValue(call.bound) + " · "
+          : "") +
+        "args " +
+        formatPreviewValue(call.args);
+      row.append(head, args);
+      if (call.status) {
+        const result = document.createElement("code");
+        result.className = "function-call__result";
+        result.textContent =
+          call.status + " " + formatPreviewValue(call.result);
+        row.append(result);
+      }
+      return [row];
+    }),
+  );
+}
+
 function diagnostics() {
   const all = [...hostDiagnostics, ...sourceDiagnostics, ...(runtimeError ? [runtimeError] : [])];
   const text = all.join("\n\n");
@@ -142,6 +204,32 @@ window.addEventListener("message", (event) => {
     display("react-version", "React " + value.react + " · shared singleton");
     display("capabilities", value.capabilities.map((item: { name: string; version: string }) => item.name + "  " + item.version).join("\n") || "None");
     fixtures = value.fixtures;
+    const functions = Array.isArray(value.functions) ? value.functions : [];
+    const functionCatalog = element("function-catalog");
+    if (functions.length === 0) {
+      functionCatalog.textContent = "None";
+    } else {
+      functionCatalog.replaceChildren(...functions.map((item: { name: string; mode: string; description?: string }) => {
+        const row = document.createElement("div");
+        row.className = "function-catalog-row";
+        const head = document.createElement("div");
+        const name = document.createElement("strong");
+        name.textContent = item.name;
+        const mode = document.createElement("span");
+        mode.textContent = item.mode;
+        head.append(name, mode);
+        row.append(head);
+        if (item.description) {
+          const description = document.createElement("p");
+          description.textContent = item.description;
+          row.append(description);
+        }
+        const marker = document.createElement("code");
+        marker.textContent = '{"$componentonceFunction":"' + item.name + '"}';
+        row.append(marker);
+        return row;
+      }));
+    }
     const themes = Array.isArray(value.themes) ? value.themes : [];
     themeSelect.replaceChildren(...themes.map((theme: { value: string; label: string }) => {
       const option = document.createElement("option");
@@ -175,6 +263,25 @@ window.addEventListener("message", (event) => {
   }
   if (type === "rendered") { runtimeError = ""; diagnostics(); updateStatus(); }
   if (type === "error") { runtimeError = String(value); diagnostics(); updateStatus(); }
+  if (type === "function-call") {
+    const call = value as FunctionCall;
+    functionCalls.set(call.id, { ...call });
+    functionCallOrder.push(call.id);
+    if (functionCallOrder.length > 100) {
+      const removed = functionCallOrder.shift();
+      if (removed !== undefined) functionCalls.delete(removed);
+    }
+    renderFunctionCalls();
+  }
+  if (type === "function-result") {
+    const result = value as { id: number; status: string; result: unknown };
+    const call = functionCalls.get(result.id);
+    if (call) {
+      call.status = result.status;
+      call.result = result.result;
+      renderFunctionCalls();
+    }
+  }
   if (type === "download") {
     const url = URL.createObjectURL(new Blob([value], { type: "application/json" }));
     const link = document.createElement("a"); link.href = url; link.download = "component.componentonce.json"; link.click();
@@ -185,6 +292,11 @@ element("apply").onclick = () => { if (apply()) { requestedRevision = revision; 
 fixtureSelect.onchange = () => selectFixture(Number(fixtureSelect.value));
 element("remount").onclick = () => { if (apply()) { runtimeError = ""; requestedRevision = latest?.source.revision ?? revision; send("reload"); } };
 element("download").onclick = () => send("download");
+element("clear-calls").onclick = () => {
+  functionCalls.clear();
+  functionCallOrder.splice(0, functionCallOrder.length);
+  renderFunctionCalls();
+};
 viewport.onchange = () => {
   if (viewport.value === "custom") return;
   previewShell.style.width = viewport.value;

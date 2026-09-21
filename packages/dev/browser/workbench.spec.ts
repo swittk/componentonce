@@ -31,10 +31,39 @@ test("workbench loads real host; edits/rebuilds recover; assets clean up; export
     await expect(preview.locator('html')).toHaveAttribute('data-theme','dark');
     await preview.getByRole('button',{name:'Approve milestone'}).click();
     await expect(preview.getByTestId('approved')).toHaveText('1');
+    await expect(page.locator('#function-catalog')).toContainText('recordApproval');
+    await expect(page.locator('#function-catalog')).toContainText('mock');
+    await expect(page.locator('#function-calls')).toContainText('recordApproval');
+    await expect(page.locator('#function-calls')).toContainText('brand-fixture');
+    await expect(page.locator('#function-calls')).toContainText('Studio North · Brand refresh');
+    await expect(page.locator('#function-calls')).toContainText('returned');
     await page.evaluate(()=>{ document.documentElement.dataset.testSentinel='stays'; });
-    await page.locator('#props').fill(JSON.stringify({title:'My live component',actionLabel:'Approve milestone'}));
+    await page.locator('#props').fill(JSON.stringify({
+      title:'My live component',
+      actionLabel:'Approve milestone',
+      onApprove:{$componentonceFunction:'recordApproval',bind:[{source:'edited-fixture'}]},
+    }));
     await page.getByRole('button',{name:'Apply inputs'}).click();
     await expect(preview.locator('h1')).toHaveText('My live component');
+
+    await page.locator('#props').fill(JSON.stringify({
+      title:'Broken function reference',
+      actionLabel:'Approve milestone',
+      onApprove:{$componentonceFunction:'missingAction'},
+    }));
+    await page.getByRole('button',{name:'Apply inputs'}).click();
+    await expect(page.locator('#error-overlay')).toBeVisible();
+    await expect(page.locator('#error-overlay-text')).toContainText('unknown host function "missingAction"');
+    await expect(preview.locator('h1')).toHaveText('My live component');
+
+    await page.locator('#props').fill(JSON.stringify({
+      title:'My live component',
+      actionLabel:'Approve milestone',
+      onApprove:{$componentonceFunction:'recordApproval',bind:[{source:'edited-fixture'}]},
+    }));
+    await page.getByRole('button',{name:'Apply inputs'}).click();
+    await expect(page.locator('#error-overlay')).toBeHidden();
+
     await writeFile(entry,original.replace('Interactive React state','Source save is live'));
     await expect(preview.locator('body')).toContainText('Source save is live');
     await expect(preview.locator('h1')).toHaveText('My live component');
