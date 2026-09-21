@@ -40,3 +40,38 @@ it("serves only generated assets on loopback; rejects cross-origin/write request
     expect((await fetch(server.url+'/artifact')).headers.get('Cache-Control')).toBe('no-store');
   }finally{await server.close();await server.close();await rm(dir,{recursive:true,force:true});}
 },20000);
+
+
+it("can bind all interfaces explicitly while retaining Host validation", async () => {
+  const dir=await mkdtemp(join(tmpdir(),"componentonce-server-bind-"));
+  const entry=join(dir,"entry.tsx");
+  await writeFile(entry,'export const definition={manifest:{id:"test/card",version:"1"},implementation:()=>null};');
+  const server=await createComponentOnceDevServer({
+    entry,
+    cwd:resolve("."),
+    port:0,
+    bind:"0.0.0.0",
+    allowedHosts:["devbox.local"],
+  });
+  try {
+    expect(server.bind).toBe("0.0.0.0");
+    expect(server.port).toBeGreaterThan(0);
+    expect(server.urls.some((url)=>url.startsWith("http://127.0.0.1:"))).toBe(true);
+    await waitFor(server.url,s=>s.source.ok);
+
+    const accepted=await new Promise<number|undefined>((done,reject)=>{
+      const r=request(server.url,{headers:{Host:"devbox.local:"+server.port}},res=>{res.resume();done(res.statusCode)});
+      r.on("error",reject);r.end();
+    });
+    expect(accepted).toBe(200);
+
+    const rejected=await new Promise<number|undefined>((done,reject)=>{
+      const r=request(server.url,{headers:{Host:"attacker.invalid:"+server.port}},res=>{res.resume();done(res.statusCode)});
+      r.on("error",reject);r.end();
+    });
+    expect(rejected).toBe(403);
+  } finally {
+    await server.close();
+    await rm(dir,{recursive:true,force:true});
+  }
+},20000);

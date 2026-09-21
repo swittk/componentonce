@@ -20,9 +20,17 @@ root.innerHTML = `
   </aside>
   <main class="preview-area">
     <div class="preview-toolbar"><div><strong>Live preview</strong><span id="build-time" class="hint">Waiting for first build</span></div>
-      <div class="preview-options"><select id="viewport" aria-label="Preview width"><option value="100%">Responsive</option><option value="375px">Mobile · 375</option><option value="768px">Tablet · 768</option></select><select id="theme" aria-label="Preview theme"><option value="light">Light</option><option value="dark">Dark</option></select></div>
+      <div class="preview-options"><span id="dimensions" class="dimensions">—</span><select id="viewport" aria-label="Preview width"><option value="100%">Responsive</option><option value="375px">Mobile · 375</option><option value="768px">Tablet · 768</option><option value="custom" hidden>Custom</option></select><select id="theme" aria-label="Host visual theme" hidden></select></div>
     </div>
-    <div class="preview-stage"><iframe id="preview" title="Component preview"></iframe></div>
+    <div class="preview-stage">
+      <div class="preview-shell" id="preview-shell">
+        <iframe id="preview" title="Component preview"></iframe>
+        <div class="error-overlay" id="error-overlay" hidden role="alert">
+          <div class="error-card"><div class="error-title"><strong>Preview needs attention</strong><button id="dismiss-error" aria-label="Dismiss error overlay">×</button></div><pre id="error-overlay-text"></pre><div class="error-hint">The last good preview stays mounted while you fix the source or host.</div></div>
+        </div>
+        <button class="resize-handle" id="resize-handle" aria-label="Resize preview" title="Drag to resize preview"></button>
+      </div>
+    </div>
     <div class="preview-footer"><span class="live-dot"></span>Source save → compile → remount <span>Same compiler · real host externals</span></div>
     <section class="diagnostics"><div class="section-title">DIAGNOSTICS <span id="diagnostic-count">0</span></div><pre id="diagnostics" role="log">No diagnostics.</pre></section>
   </main>
@@ -42,6 +50,10 @@ function element<T extends HTMLElement>(id: string): T {
   return value as T;
 }
 const frame = element<HTMLIFrameElement>("preview");
+const previewShell = element<HTMLDivElement>("preview-shell");
+const viewport = element<HTMLSelectElement>("viewport");
+const themeSelect = element<HTMLSelectElement>("theme");
+const errorOverlay = element<HTMLDivElement>("error-overlay");
 const props = element<HTMLTextAreaElement>("props");
 const payload = element<HTMLTextAreaElement>("payload");
 const context = element<HTMLTextAreaElement>("context");
@@ -56,14 +68,25 @@ let runtimeError = "";
 let sourceDiagnostics: string[] = [];
 let hostDiagnostics: string[] = [];
 let latest: { source: ComponentOnceDevStatus; host: ComponentOnceDevStatus } | undefined;
+let dismissedErrorSignature = "";
 const send = (type: string, value?: unknown) => frame.contentWindow?.postMessage({ componentonce: true, type, value }, window.location.origin);
 const display = (id: string, text: string) => { element(id).textContent = text; };
 const formatBytes = (bytes: number) => bytes < 1024 ? bytes + " B" : (bytes / 1024).toFixed(1) + " KB";
 function diagnostics() {
   const all = [...hostDiagnostics, ...sourceDiagnostics, ...(runtimeError ? [runtimeError] : [])];
-  display("diagnostics", all.join("\n\n") || "No diagnostics.");
+  const text = all.join("\n\n");
+  display("diagnostics", text || "No diagnostics.");
   display("diagnostic-count", String(all.length));
   element("diagnostics").classList.toggle("has-errors", all.length > 0);
+
+  if (all.length === 0) {
+    dismissedErrorSignature = "";
+    errorOverlay.hidden = true;
+  } else {
+    display("error-overlay-text", text);
+    const signature = all.join("\u0000");
+    errorOverlay.hidden = signature === dismissedErrorSignature;
+  }
 }
 function apply(): boolean {
   try {
@@ -119,11 +142,19 @@ window.addEventListener("message", (event) => {
     display("react-version", "React " + value.react + " · shared singleton");
     display("capabilities", value.capabilities.map((item: { name: string; version: string }) => item.name + "  " + item.version).join("\n") || "None");
     fixtures = value.fixtures;
+    const themes = Array.isArray(value.themes) ? value.themes : [];
+    themeSelect.replaceChildren(...themes.map((theme: { value: string; label: string }) => {
+      const option = document.createElement("option");
+      option.value = theme.value;
+      option.textContent = theme.label;
+      return option;
+    }));
+    themeSelect.hidden = themes.length === 0;
+    if (themes.length > 0) send("theme", themeSelect.value);
     fixtureSelect.replaceChildren(...fixtures.map((fixture, index) => {
       const option = document.createElement("option"); option.value = String(index); option.textContent = fixture.name; return option;
     }));
     if (!hasInputs) selectFixture(0); else apply();
-    send("theme", element<HTMLSelectElement>("theme").value);
     requestArtifact();
   }
   if (type === "loaded") {
@@ -154,7 +185,57 @@ element("apply").onclick = () => { if (apply()) { requestedRevision = revision; 
 fixtureSelect.onchange = () => selectFixture(Number(fixtureSelect.value));
 element("remount").onclick = () => { if (apply()) { runtimeError = ""; requestedRevision = latest?.source.revision ?? revision; send("reload"); } };
 element("download").onclick = () => send("download");
-element<HTMLSelectElement>("viewport").onchange = (event) => { frame.style.width = (event.target as HTMLSelectElement).value; };
-element<HTMLSelectElement>("theme").onchange = (event) => send("theme", (event.target as HTMLSelectElement).value);
+viewport.onchange = () => {
+  if (viewport.value === "custom") return;
+  previewShell.style.width = viewport.value;
+};
+themeSelect.onchange = () => send("theme", themeSelect.value);
+
+element("dismiss-error").onclick = () => {
+  const all = [...hostDiagnostics, ...sourceDiagnostics, ...(runtimeError ? [runtimeError] : [])];
+  dismissedErrorSignature = all.join("\u0000");
+  errorOverlay.hidden = true;
+};
+
+const dimensions = new ResizeObserver((entries) => {
+  const box = entries[0]?.contentRect;
+  if (!box) return;
+  display("dimensions", Math.round(box.width) + " × " + Math.round(box.height));
+});
+dimensions.observe(previewShell);
+
+const resizeHandle = element<HTMLButtonElement>("resize-handle");
+resizeHandle.onpointerdown = (event) => {
+  event.preventDefault();
+  resizeHandle.setPointerCapture(event.pointerId);
+  const startX = event.clientX;
+  const startY = event.clientY;
+  const startWidth = previewShell.getBoundingClientRect().width;
+  const startHeight = previewShell.getBoundingClientRect().height;
+  const stage = previewShell.parentElement?.getBoundingClientRect();
+
+  const move = (moveEvent: PointerEvent) => {
+    if (moveEvent.pointerId !== event.pointerId) return;
+    const maxWidth = Math.max(280, (stage?.width ?? startWidth) - 2);
+    const width = Math.min(maxWidth, Math.max(280, startWidth + moveEvent.clientX - startX));
+    const height = Math.min(1100, Math.max(240, startHeight + moveEvent.clientY - startY));
+    previewShell.style.width = width + "px";
+    previewShell.style.height = height + "px";
+    viewport.value = "custom";
+  };
+  const done = (upEvent: PointerEvent) => {
+    if (upEvent.pointerId !== event.pointerId) return;
+    resizeHandle.removeEventListener("pointermove", move);
+    resizeHandle.removeEventListener("pointerup", done);
+    resizeHandle.removeEventListener("pointercancel", done);
+    resizeHandle.releasePointerCapture(event.pointerId);
+  };
+  resizeHandle.addEventListener("pointermove", move);
+  resizeHandle.addEventListener("pointerup", done);
+  resizeHandle.addEventListener("pointercancel", done);
+};
 window.addEventListener("keydown", (event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); if (apply()) { requestedRevision = revision; requestArtifact(); } } });
-window.addEventListener("pagehide", () => events.close(), { once: true });
+window.addEventListener("pagehide", () => {
+  events.close();
+  dimensions.disconnect();
+}, { once: true });

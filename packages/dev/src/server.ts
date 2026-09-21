@@ -1,5 +1,6 @@
 import { createServer, type ServerResponse } from "node:http";
 import { readFile, stat } from "node:fs/promises";
+import { networkInterfaces } from "node:os";
 import { basename, dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build as esbuildBuild, context as esbuildContext, type BuildContext, type Plugin } from "esbuild";
@@ -12,15 +13,21 @@ export interface ComponentOnceDevServerOptions {
   /** Browser module exporting a default defineReactDevHost(...) profile. */
   readonly host?: string;
   readonly port?: number;
+  /** Network interface/address to listen on. Defaults to loopback; use 0.0.0.0 explicitly for LAN access. */
+  readonly bind?: string;
+  /** Extra HTTP Host names accepted when intentionally exposing the trusted-code workbench. */
+  readonly allowedHosts?: readonly string[];
   readonly cwd?: string;
   /** Additional exact imports allowed by the production compiler; values come from the profile. */
   readonly externalModules?: readonly string[];
   readonly definitionExport?: string;
 }
 
-/** A loopback-only managed workbench. Closing disposes watchers, streams and HTTP connections. */
+/** A managed development workbench. Loopback is the safe default; broader binding must be explicit. */
 export interface ComponentOnceDevServer {
   readonly url: string;
+  readonly urls: readonly string[];
+  readonly bind: string;
   readonly port: number;
   close(): Promise<void>;
 }
@@ -29,6 +36,43 @@ const runtimeDirectory = dirname(fileURLToPath(import.meta.url));
 const defaultExternals = ["react", "react/jsx-runtime", "react/jsx-dev-runtime", "@componentonce/react"];
 
 function diagnostic(text: string): ComponentOnceDiagnostic { return { kind: "error", text, notes: [] }; }
+
+function normalizeHostName(value: string): string | undefined {
+  try {
+    const hostname = new URL("http://" + value).hostname.toLowerCase();
+    return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  } catch {
+    return undefined;
+  }
+}
+
+function formatUrlHost(host: string): string {
+  return host.includes(":") && !host.startsWith("[") ? "[" + host + "]" : host;
+}
+
+function localNetworkAddresses(): string[] {
+  const output = new Set<string>(["127.0.0.1", "::1", "localhost"]);
+  for (const entries of Object.values(networkInterfaces())) {
+    for (const entry of entries ?? []) output.add(entry.address.toLowerCase());
+  }
+  return [...output];
+}
+
+function advertisedNetworkAddresses(family: "IPv4" | "IPv6"): string[] {
+  const output = new Set<string>(family === "IPv4" ? ["127.0.0.1", "localhost"] : ["::1", "localhost"]);
+  for (const entries of Object.values(networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      const matchesFamily =
+        family === "IPv4"
+          ? entry.family === "IPv4"
+          : entry.family === "IPv6";
+      if (!entry.internal && matchesFamily && !entry.address.toLowerCase().startsWith("fe80:")) {
+        output.add(entry.address.toLowerCase());
+      }
+    }
+  }
+  return [...output];
+}
 
 /** Start an in-memory source compiler and a separate browser-host/workbench compiler. */
 export async function createComponentOnceDevServer(options: ComponentOnceDevServerOptions): Promise<ComponentOnceDevServer> {
@@ -39,6 +83,15 @@ export async function createComponentOnceDevServer(options: ComponentOnceDevServ
   if (profile !== undefined && !(await stat(profile)).isFile()) throw new Error("Host profile must be a file.");
   const portOption = options.port ?? 4173;
   if (!Number.isInteger(portOption) || portOption < 0 || portOption > 65535) throw new Error("Port must be an integer between 0 and 65535.");
+  const bind = (options.bind ?? "127.0.0.1").trim();
+  if (!bind || bind.includes("://") || /[/?#]/.test(bind)) throw new Error("Bind must be a host/address without a scheme, port, path, query, or hash.");
+  const allowedHosts = new Set(localNetworkAddresses());
+  allowedHosts.add(bind.toLowerCase());
+  for (const host of options.allowedHosts ?? []) {
+    const normalized = normalizeHostName(host);
+    if (normalized === undefined) throw new Error("Invalid allowed host " + JSON.stringify(host) + ".");
+    allowedHosts.add(normalized);
+  }
   const sourceExternals = [...new Set([...defaultExternals, ...(options.externalModules ?? [])])];
   let revision = 0;
   let hostRevision = 0;
@@ -67,9 +120,14 @@ export async function createComponentOnceDevServer(options: ComponentOnceDevServ
     response.setHeader("Referrer-Policy", "no-referrer");
     response.setHeader("X-Frame-Options", "SAMEORIGIN");
     // No arbitrary hostnames/CORS: prevent DNS rebinding and drive-by source/credential reads.
-    const hosts = new Set(["127.0.0.1:" + port, "localhost:" + port]);
-    if (!hosts.has(request.headers.host ?? "")) { response.writeHead(403).end("Invalid development host"); return; }
-    if (request.headers.origin && request.headers.origin !== "http://" + request.headers.host) { response.writeHead(403).end("Cross-origin requests are not allowed"); return; }
+    const requestHost = request.headers.host ?? "";
+    const requestHostName = normalizeHostName(requestHost);
+    if (requestHostName === undefined || !allowedHosts.has(requestHostName)) { response.writeHead(403).end("Invalid development host"); return; }
+    if (request.headers.origin) {
+      let originHost: string | undefined;
+      try { originHost = new URL(request.headers.origin).host.toLowerCase(); } catch { originHost = undefined; }
+      if (originHost !== requestHost.toLowerCase()) { response.writeHead(403).end("Cross-origin requests are not allowed"); return; }
+    }
     if (request.headers["sec-fetch-site"] === "cross-site") { response.writeHead(403).end("Cross-site requests are not allowed"); return; }
     if (request.method !== "GET" && request.method !== "HEAD") { response.writeHead(405, { Allow: "GET, HEAD" }).end(); return; }
     const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
@@ -120,7 +178,7 @@ export async function createComponentOnceDevServer(options: ComponentOnceDevServ
   try {
     await new Promise<void>((done, reject) => {
       http.once("error", reject);
-      http.listen(portOption, "127.0.0.1", () => { http.off("error", reject); done(); });
+      http.listen(portOption, bind, () => { http.off("error", reject); done(); });
     });
     const address = http.address();
     if (address === null || typeof address === "string") throw new Error("Missing HTTP address.");
@@ -187,6 +245,14 @@ export async function createComponentOnceDevServer(options: ComponentOnceDevServ
         broadcast();
       },
     });
-    return { url: "http://127.0.0.1:" + port, port, close };
+    const hostsForUrls =
+      bind === "0.0.0.0"
+        ? advertisedNetworkAddresses("IPv4")
+        : bind === "::"
+          ? advertisedNetworkAddresses("IPv6")
+          : [bind];
+    const urls = [...new Set(hostsForUrls.map((host) => "http://" + formatUrlHost(host) + ":" + port))];
+    const loopbackUrl = urls.find((url) => url.startsWith("http://127.0.0.1:")) ?? urls[0] ?? "http://127.0.0.1:" + port;
+    return { url: loopbackUrl, urls, bind, port, close };
   } catch (error) { await close(); throw error; }
 }
