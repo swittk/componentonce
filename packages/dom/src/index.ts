@@ -167,11 +167,13 @@ export function defineDomComponent<TProps, THostContext, TPayload>(
 export function mountDomComponent<TProps, THostContext, TPayload>(
   input: ComponentOnceDomMountInput<TProps, THostContext, TPayload>,
 ): ComponentOnceDomMountHandle<TProps, THostContext, TPayload> {
-  assertComponentOnceCompatible(
-    input.definition.manifest,
-    withDomCapability(input.hostCapabilities),
-    input.capabilityCompatibility,
-  );
+  assertDomCompatible(input);
+  return mountCompatibleDomComponent(input);
+}
+
+function mountCompatibleDomComponent<TProps, THostContext, TPayload>(
+  input: ComponentOnceDomMountInput<TProps, THostContext, TPayload>,
+): ComponentOnceDomMountHandle<TProps, THostContext, TPayload> {
   const validation = normalizeValidation(input.validation);
   const props = validation.props
     ? validateField(input.definition, "props", input.props)
@@ -198,22 +200,28 @@ export function validateDomComponentBoundary<TProps, THostContext, TPayload>(
   };
 }
 
-/** Validate one raw boundary then mount without a second validation pass. */
+/** Check compatibility, validate one raw boundary, then mount without repeated checks. */
 export function mountDomComponentBoundary<TProps, THostContext, TPayload>(
   input: ComponentOnceDomBoundaryMountInput<TProps, THostContext, TPayload>,
 ): ComponentOnceDomMountHandle<TProps, THostContext, TPayload> {
+  assertDomCompatible(input);
   const validated = validateDomComponentBoundary(input.definition, input);
-  return mountDomComponent({
+  return mountCompatibleDomComponent({
     definition: input.definition,
     target: input.target,
     ...validated,
-    ...(input.hostCapabilities === undefined
-      ? {}
-      : { hostCapabilities: input.hostCapabilities }),
-    ...(input.capabilityCompatibility === undefined
-      ? {}
-      : { capabilityCompatibility: input.capabilityCompatibility }),
   });
+}
+
+function assertDomCompatible<TProps, THostContext, TPayload>(
+  input: ComponentOnceDomMountInput<TProps, THostContext, TPayload> |
+    ComponentOnceDomBoundaryMountInput<TProps, THostContext, TPayload>,
+): void {
+  assertComponentOnceCompatible(
+    input.definition.manifest,
+    withDomCapability(input.hostCapabilities),
+    input.capabilityCompatibility,
+  );
 }
 
 /**

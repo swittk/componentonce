@@ -330,6 +330,35 @@ describe("React definitions and rendering", () => {
     expect(() => host.renderBoundary(injectedCompatibility)).toThrow(ComponentOnceCapabilityVersionError);
   });
 
+  it("checks boundary compatibility before invoking validators", () => {
+    const validateProps = vi.fn((_input: unknown): CardProps => ({ title: "validated" }));
+    const validatePayload = vi.fn((_input: unknown): CardPayload => ({ recordId: 1 }));
+    const definition = defineReactComponent<CardProps, AppContext, CardPayload>({
+      manifest: {
+        id: "example/incompatible-boundary",
+        version: "1.0.0",
+        requirements: [createReactRequirement("0")],
+      },
+      component: () => <span>never rendered</span>,
+      validateProps,
+      validatePayload,
+    });
+
+    expect(() =>
+      renderReactComponentBoundary({
+        definition,
+        props: { title: "raw" },
+        context: {
+          formatTitle: (title) => title,
+          services: { audit: () => undefined },
+        },
+        payload: { recordId: 1 },
+      }),
+    ).toThrow(ComponentOnceCapabilityVersionError);
+    expect(validateProps).not.toHaveBeenCalled();
+    expect(validatePayload).not.toHaveBeenCalled();
+  });
+
   it("lets a host deliberately accept a compatible React runtime range", () => {
     const definition = defineReactComponent<CardProps, AppContext, CardPayload>({
       manifest: {

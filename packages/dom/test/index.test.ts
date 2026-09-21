@@ -156,6 +156,35 @@ describe("DOM adapter", () => {
     expect(() => host.mountBoundary(injectedCompatibility)).toThrow(ComponentOnceCapabilityVersionError);
   });
 
+  it("checks boundary compatibility before invoking validators", () => {
+    const validateProps = vi.fn((_input: unknown): Props => ({ label: "validated" }));
+    const validatePayload = vi.fn((_input: unknown): Payload => ({ value: 1 }));
+    const mount = vi.fn();
+    const component = defineDomComponent<Props, Context, Payload>({
+      manifest: {
+        id: "example/incompatible-boundary",
+        version: "1.0.0",
+        requirements: [{ name: "browser-dom", version: "999" }],
+      },
+      implementation: { mount },
+      validateProps,
+      validatePayload,
+    });
+
+    expect(() =>
+      mountDomComponentBoundary({
+        definition: component,
+        target: target(),
+        props: { label: "raw" },
+        context: { prefix: "" },
+        payload: { value: 1 },
+      }),
+    ).toThrow(ComponentOnceCapabilityVersionError);
+    expect(validateProps).not.toHaveBeenCalled();
+    expect(validatePayload).not.toHaveBeenCalled();
+    expect(mount).not.toHaveBeenCalled();
+  });
+
   it("rejects an incompatible capability before mount", () => {
     const mount = vi.fn();
     const component = defineDomComponent<Props, Context, Payload>({
