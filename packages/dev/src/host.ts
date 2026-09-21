@@ -1,6 +1,12 @@
 import type { ReactElement, ReactNode } from "react";
 import type { ComponentOnceCapability, ComponentOnceCapabilityCompatibility } from "@componentonce/core";
 
+/** One host-defined visual variant exposed by the workbench without assuming a CSS/theme framework. */
+export interface ComponentOnceDevThemeVariant {
+  readonly value: string;
+  readonly label: string;
+}
+
 /** A named, serializable preview scenario. Context input is data, not the host's functions. */
 export interface ComponentOnceDevFixture<TProps = unknown, TPayload = unknown, TContextInput = unknown> {
   readonly name: string;
@@ -17,6 +23,10 @@ export interface ComponentOnceReactDevHost<TContext = unknown, TContextInput = u
   readonly capabilities?: readonly ComponentOnceCapability[];
   readonly capabilityCompatibility?: ComponentOnceCapabilityCompatibility;
   readonly fixtures?: readonly ComponentOnceDevFixture<TProps, TPayload, TContextInput>[];
+  /** Optional host-defined visual variants. The workbench assumes no CSS framework or naming convention. */
+  readonly themes?: readonly ComponentOnceDevThemeVariant[];
+  /** Apply the selected host visual variant. Defaults to setting documentElement.dataset.theme. */
+  readonly applyTheme?: (value: string) => void;
   /** Called in the browser once before any component executes. Never run by the Node compiler. */
   readonly setup?: () => void | Promise<void>;
   readonly createContext?: (input: TContextInput) => TContext;

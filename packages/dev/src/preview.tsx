@@ -112,7 +112,11 @@ export function mountComponentOncePreview(profile: ComponentOnceReactDevHost): (
     if (type === "reload") void load();
     if (type === "remount") render();
     if (type === "download" && loaded !== undefined) send("download", JSON.stringify(loaded.componentPackage, null, 2));
-    if (type === "theme") document.documentElement.dataset.theme = String(value);
+    if (type === "theme") {
+      const theme = String(value);
+      if (profile.applyTheme) profile.applyTheme(theme);
+      else if (theme) document.documentElement.dataset.theme = theme;
+    }
   };
   window.addEventListener("message", onMessage);
   const onUnhandled = (event: PromiseRejectionEvent) => fail(event.reason);
@@ -134,6 +138,7 @@ export function mountComponentOncePreview(profile: ComponentOnceReactDevHost): (
       externals: Object.keys(externals),
       capabilities: [{ name: "react", version: React.version }, ...(profile.capabilities ?? [])],
       fixtures: profile.fixtures ?? [{ name: "Default", props: {}, payload: {}, context: {} }],
+      themes: profile.themes ?? [],
     });
     // The parent sends the selected fixture then requests the artifact: no fixture/load race.
   }).catch(fail);

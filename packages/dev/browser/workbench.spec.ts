@@ -26,6 +26,9 @@ test("workbench loads real host; edits/rebuilds recover; assets clean up; export
     await expect(preview.locator('h1')).toHaveText('Build something worth sharing');
     await expect(preview.locator('body')).toContainText('$4,200');
     await expect(preview.locator('img')).toHaveJSProperty('naturalWidth',34);
+    await expect(page.locator('#theme')).toBeVisible();
+    await page.locator('#theme').selectOption('dark');
+    await expect(preview.locator('html')).toHaveAttribute('data-theme','dark');
     await preview.getByRole('button',{name:'Approve milestone'}).click();
     await expect(preview.getByTestId('approved')).toHaveText('1');
     await page.evaluate(()=>{ document.documentElement.dataset.testSentinel='stays'; });
@@ -40,10 +43,13 @@ test("workbench loads real host; edits/rebuilds recover; assets clean up; export
     const goodRevision=await page.locator('#revision').innerText();
     await writeFile(entry,'export const = bad syntax');
     await expect(page.locator('#diagnostics')).not.toHaveText('No diagnostics.');
+    await expect(page.locator('#error-overlay')).toBeVisible();
+    await expect(page.locator('#error-overlay-text')).not.toBeEmpty();
     await expect(preview.locator('h1')).toHaveText('My live component');
     expect(await page.locator('#revision').innerText()).toBe(goodRevision);
     await writeFile(entry,original);
     await expect(page.locator('#diagnostics')).toHaveText('No diagnostics.');
+    await expect(page.locator('#error-overlay')).toBeHidden();
     await expect(preview.locator('body')).toContainText('Interactive React state');
     const oldUrl=await preview.locator('img').getAttribute('src');
     const cssPath=join(dir,'card.module.css');
@@ -61,7 +67,19 @@ test("workbench loads real host; edits/rebuilds recover; assets clean up; export
     }
     expect(await preview.locator('style').count()).toBe(countBefore);
     await page.locator('#viewport').selectOption('375px');
-    await expect(page.locator('#preview')).toHaveCSS('width','375px');
+    await expect(page.locator('#preview-shell')).toHaveCSS('width','375px');
+    const shellBefore=await page.locator('#preview-shell').boundingBox();
+    const handle=await page.locator('#resize-handle').boundingBox();
+    if(!shellBefore||!handle)throw new Error('Missing resize geometry');
+    await page.mouse.move(handle.x+handle.width/2,handle.y+handle.height/2);
+    await page.mouse.down();
+    await page.mouse.move(handle.x+handle.width/2+90,handle.y+handle.height/2+70,{steps:5});
+    await page.mouse.up();
+    await expect(page.locator('#viewport')).toHaveValue('custom');
+    const shellAfter=await page.locator('#preview-shell').boundingBox();
+    expect(shellAfter?.width ?? 0).toBeGreaterThan(shellBefore.width+50);
+    expect(shellAfter?.height ?? 0).toBeGreaterThan(shellBefore.height+40);
+    await expect(page.locator('#dimensions')).toContainText('×');
     await page.locator('#fixtures').selectOption('1');
     await expect(preview.locator('h1')).toHaveText('A different host, same component');
     await expect(preview.locator('body')).toContainText('48,000');

@@ -16,7 +16,12 @@ You can also invoke the package directly:
 componentonce-dev ./src/card.tsx --host ./dev/componentonce-host.ts
 ```
 
-The server binds to loopback only. The default URL is http://127.0.0.1:4173.
+The safe default is loopback-only at http://127.0.0.1:4173. Port and bind address are configurable:
+
+    componentonce dev ./src/card.tsx --host ./dev/host.ts --port 4300
+    componentonce dev ./src/card.tsx --host ./dev/host.ts --bind 0.0.0.0 --port 4300
+
+When binding beyond loopback, ComponentOnce still validates HTTP Host values. Local interface addresses are allowed automatically; use repeatable --allowed-host name.example only for an intentional custom hostname/reverse proxy.
 
 ## Browser host profile
 
@@ -29,6 +34,14 @@ import * as AppSdk from "@my-app/sdk";
 export default defineReactDevHost({
   name: "My application",
   capabilities: [{ name: "my-app-sdk", version: "3" }],
+  themes: [
+    { value: "light", label: "Light" },
+    { value: "dark", label: "Dark" },
+  ],
+  applyTheme(value) {
+    // This is host policy. It could toggle a class, CSS variables, a provider, etc.
+    document.documentElement.dataset.theme = value;
+  },
   externals: {
     "@my-app/sdk": AppSdk,
   },
@@ -60,10 +73,10 @@ Use --external exact/specifier for every additional import allowed by the produc
 - named fixtures supplied by the real host profile;
 - host capabilities and external import list;
 - manifest requirements, bundle size, packaged assets, and compiler/runtime diagnostics;
-- responsive/mobile preview widths and light/dark host theme signal;
+- responsive/mobile width presets plus free drag-resize with live width × height;\n- host-defined visual/theme variants (the workbench assumes no Tailwind, class name, CSS-variable, or theme convention);
 - an Export package action that emits a normal componentonce.trusted-package.v2 envelope.
 
-Source dependency edits (TS/JS, CSS/CSS Modules, images/fonts/assets) trigger rebuilds. Successful source updates remount only the preview component, preserving fixture inputs and the workbench shell. Syntax/import failures keep the last good component mounted while diagnostics update.
+Source dependency edits (TS/JS, CSS/CSS Modules, images/fonts/assets) trigger rebuilds. Successful source updates remount only the preview component, preserving fixture inputs and the workbench shell. Syntax/import/runtime failures keep the last good component mounted, update the diagnostics panel, and show an auto-clearing redbox-style overlay over the preview.
 
 ## HMR semantics
 
@@ -84,7 +97,7 @@ This avoids inventing a second module/runtime format or letting stale React stat
 
 ComponentOnce dev executes trusted local code. It is not an untrusted-code sandbox.
 
-The development HTTP server binds to 127.0.0.1 only, accepts only localhost/127.0.0.1 Host values, rejects cross-origin/cross-site requests, exposes only generated workbench/preview assets plus status/artifact endpoints, never serves repository files, and uses Cache-Control: no-store.
+The development HTTP server binds to 127.0.0.1 by default. Broader binding is opt-in with --bind; even then it accepts only local-interface or explicitly allowlisted Host values, rejects cross-origin/cross-site requests, exposes only generated workbench/preview assets plus status/artifact endpoints, never serves repository files, and uses Cache-Control: no-store.
 
 ## Example
 

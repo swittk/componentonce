@@ -254,7 +254,7 @@ function usage(): string {
     "ComponentOnce trusted component builder",
     "",
     "Usage:",
-    "  componentonce dev <entry> [--host <browser-profile.ts>] [--port <port>] (requires @componentonce/dev)",
+    "  componentonce dev <entry> [--host <browser-profile.ts>] [--port <port>] [--bind <address>] (requires @componentonce/dev)",
     "  componentonce build <entry> [options]",
     "",
     "Options:",
