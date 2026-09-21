@@ -18,6 +18,7 @@ import {
   ComponentOncePackageManifestMismatchError,
   buildTrustedReactPackage,
   calculateTrustedBundleIntegrity,
+  createTrustedComponentPackage,
   compileTrustedModule,
   compileTrustedReactModule,
   instantiateTrustedBundle,
@@ -299,6 +300,48 @@ describe("compileTrustedReactModule", () => {
       }),
     );
     expect(html).toBe("<button>packaged:6:ok</button>");
+  });
+
+  it("rejects package metadata strings the runtime parser would reject", async () => {
+    const artifact = await compileTrustedModule({
+      source: "export const value = 1;",
+      sourceFileName: "metadata-validation.ts",
+    });
+    const validInput = {
+      renderer: "dom",
+      manifest: {
+        id: "example.valid",
+        version: "1.0.0",
+        displayName: "Valid",
+        requirements: [{ name: "host-api", version: "1" }],
+      },
+      bundle: artifact,
+    };
+
+    expect(() => createTrustedComponentPackage({ ...validInput, renderer: " dom" }))
+      .toThrow("renderer must be a non-empty stable string.");
+    expect(() => createTrustedComponentPackage({ ...validInput, definitionExport: "definition\n" }))
+      .toThrow("definitionExport must be a non-empty stable string.");
+    expect(() => createTrustedComponentPackage({
+      ...validInput,
+      manifest: { ...validInput.manifest, id: "example.valid " },
+    })).toThrow("manifest.id must be a non-empty stable string.");
+    expect(() => createTrustedComponentPackage({
+      ...validInput,
+      manifest: { ...validInput.manifest, version: "1.0.0\r" },
+    })).toThrow("manifest.version must be a non-empty stable string.");
+    expect(() => createTrustedComponentPackage({
+      ...validInput,
+      manifest: { ...validInput.manifest, displayName: "" },
+    })).toThrow("manifest.displayName must be a non-empty stable string.");
+    expect(() => createTrustedComponentPackage({
+      ...validInput,
+      manifest: { ...validInput.manifest, requirements: [{ name: "host-api\0", version: "1" }] },
+    })).toThrow("manifest.requirements[0].name must be a non-empty stable string.");
+    expect(() => createTrustedComponentPackage({
+      ...validInput,
+      manifest: { ...validInput.manifest, requirements: [{ name: "host-api", version: " 1" }] },
+    })).toThrow("manifest.requirements[0].version must be a non-empty stable string.");
   });
 
   it("rejects a package envelope whose manifest no longer matches its executable definition", async () => {
