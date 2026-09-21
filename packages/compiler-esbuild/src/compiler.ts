@@ -10,6 +10,7 @@ import {
 } from "node:path";
 import {
   build,
+  context as createBuildContext,
   type BuildFailure,
   type Loader,
   type Message,
@@ -983,4 +984,84 @@ function deepFreeze<T>(value: T): T {
 
 function compareStrings(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** File-based source watch options; rebuilds use the canonical packaging compiler. */
+export interface ComponentOnceWatchInput extends Omit<ComponentOnceCompileInput, "source" | "sourceFileName" | "resolveDir"> {
+  readonly entry: string;
+  /** Called for successes and failures; the watcher remains alive after syntax errors. */
+  readonly onBuild: (result: ComponentOnceWatchResult) => void | Promise<void>;
+}
+
+/** A completed source build, without executable host values or transport assumptions. */
+export type ComponentOnceWatchResult =
+  | { readonly ok: true; readonly artifact: ComponentOnceTrustedBundleArtifact; readonly durationMs: number }
+  | { readonly ok: false; readonly diagnostics: readonly ComponentOnceDiagnostic[]; readonly durationMs: number };
+
+/** Dispose the graph watcher or explicitly request one rebuild. */
+export interface ComponentOnceModuleWatcher {
+  rebuild(): Promise<void>;
+  dispose(): Promise<void>;
+}
+
+/**
+ * Watch the entry and its imported TS/JS/CSS/assets using esbuild's incremental graph.
+ * The final artifact deliberately goes through compileTrustedModule, including its
+ * content-dependent CSS namespace pass, instead of a divergent development compiler.
+ * No package files are written and failures do not destroy a caller's last good artifact.
+ */
+export async function watchTrustedModuleFile(input: ComponentOnceWatchInput): Promise<ComponentOnceModuleWatcher> {
+  const entry = resolve(input.entry);
+  const workingDirectory = dirname(entry);
+  const externals = normalizeAllowedExternals(input.externalModules ?? []);
+  const externalPlugin = createHostExternalPlugin(externals);
+  const graph = await createBuildContext({
+    absWorkingDir: workingDirectory,
+    // A virtual importer lets the strict external plugin handle the entry as a relative import.
+    stdin: { contents: 'import ' + JSON.stringify('./' + basename(entry)), resolveDir: workingDirectory, sourcefile: '__componentonce_watch__.ts' },
+    bundle: true,
+    format: "cjs",
+    platform: "neutral",
+    jsx: input.jsx ?? "transform",
+    outdir: resolve(workingDirectory, OUTPUT_DIRECTORY_NAME),
+    loader: { ...normalizeLoaders(input.loaders), ...(input.loader === undefined ? {} : { [extname(entry)]: input.loader }) } as Record<string, Loader>,
+    logLevel: "silent",
+    write: false,
+    plugins: [externalPlugin, {
+      name: "componentonce-watch-result",
+      setup(api) {
+        let started = 0;
+        api.onStart(() => { started = performance.now(); });
+        api.onEnd(async (result) => {
+          if (result.errors.length > 0) {
+            await input.onBuild({ ok: false, diagnostics: result.errors.map((error) => normalizeMessage("error", error)), durationMs: performance.now() - started });
+            return;
+          }
+          let outcome: ComponentOnceWatchResult;
+          try {
+            const artifact = await compileTrustedModule({
+              source: await readFile(entry, "utf8"),
+              sourceFileName: basename(entry),
+              resolveDir: workingDirectory,
+              ...(input.loader === undefined ? {} : { loader: input.loader }),
+              ...(input.jsx === undefined ? {} : { jsx: input.jsx }),
+              ...(input.externalModules === undefined ? {} : { externalModules: input.externalModules }),
+              ...(input.loaders === undefined ? {} : { loaders: input.loaders }),
+              ...(input.contentTypes === undefined ? {} : { contentTypes: input.contentTypes }),
+            });
+            outcome = { ok: true, artifact, durationMs: performance.now() - started };
+          } catch (error) {
+            outcome = { ok: false, diagnostics: error instanceof ComponentOnceCompileError ? error.diagnostics : [createInternalDiagnostic(error instanceof Error ? error.message : String(error))], durationMs: performance.now() - started };
+          }
+          await input.onBuild(outcome);
+        });
+      },
+    }],
+  });
+  try { await graph.watch(); } catch (error) { await graph.dispose(); throw error; }
+  let disposed = false;
+  return {
+    async rebuild() { if (disposed) throw new Error("ComponentOnce watcher is disposed."); await graph.rebuild(); },
+    async dispose() { if (!disposed) { disposed = true; await graph.dispose(); } },
+  };
 }
