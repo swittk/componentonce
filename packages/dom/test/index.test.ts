@@ -1,4 +1,4 @@
-import { ComponentOnceCapabilityVersionError } from "@componentonce/core";
+import { ComponentOnceCapabilityMissingError, ComponentOnceCapabilityVersionError } from "@componentonce/core";
 import { describe, expect, it, vi } from "vitest";
 import {
   createDomHost,
@@ -105,6 +105,55 @@ describe("DOM adapter", () => {
 
     expect((element as unknown as { textContent: string }).textContent).toBe("#bound:8");
     mounted.destroy();
+  });
+
+  it("keeps bound host policy authoritative when runtime callers include hidden policy fields", () => {
+    const host = createDomHost<Context>();
+    const base = definition();
+    const missingCapability = host.define<Props, Payload>({
+      manifest: {
+        id: "example/no-dom-policy-injection",
+        version: "1.0.0",
+        requirements: [
+          createDomRequirement("1"),
+          { name: "example-api", version: "1" },
+        ],
+      },
+      implementation: base.implementation,
+      ...(base.validateProps === undefined ? {} : { validateProps: base.validateProps }),
+      ...(base.validatePayload === undefined ? {} : { validatePayload: base.validatePayload }),
+    });
+    const injectedCapabilities = {
+      definition: missingCapability,
+      target: target(),
+      props: { label: "blocked" },
+      context: { prefix: "" },
+      payload: { value: 1 },
+      hostCapabilities: [{ name: "example-api", version: "1" }],
+    };
+    expect(() => host.mount(injectedCapabilities)).toThrow(ComponentOnceCapabilityMissingError);
+    expect(() => host.mountBoundary(injectedCapabilities)).toThrow(ComponentOnceCapabilityMissingError);
+
+    const incompatibleDom = host.define<Props, Payload>({
+      manifest: {
+        id: "example/no-dom-compatibility-injection",
+        version: "1.0.0",
+        requirements: [{ name: "browser-dom", version: "999" }],
+      },
+      implementation: base.implementation,
+      ...(base.validateProps === undefined ? {} : { validateProps: base.validateProps }),
+      ...(base.validatePayload === undefined ? {} : { validatePayload: base.validatePayload }),
+    });
+    const injectedCompatibility = {
+      definition: incompatibleDom,
+      target: target(),
+      props: { label: "blocked" },
+      context: { prefix: "" },
+      payload: { value: 1 },
+      capabilityCompatibility: () => true,
+    };
+    expect(() => host.mount(injectedCompatibility)).toThrow(ComponentOnceCapabilityVersionError);
+    expect(() => host.mountBoundary(injectedCompatibility)).toThrow(ComponentOnceCapabilityVersionError);
   });
 
   it("rejects an incompatible capability before mount", () => {

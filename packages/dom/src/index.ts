@@ -233,24 +233,36 @@ export function createDomHost<THostContext>(
     ) => defineDomComponent(input),
     mount: <TProps, TPayload>(
       input: ComponentOnceBoundDomMountInput<TProps, THostContext, TPayload>,
-    ) =>
-      mountDomComponent({
-        ...input,
+    ) => {
+      const {
+        hostCapabilities: _callerHostCapabilities,
+        capabilityCompatibility: _callerCapabilityCompatibility,
+        ...mountInput
+      } = input as ComponentOnceDomMountInput<TProps, THostContext, TPayload>;
+      return mountDomComponent({
+        ...mountInput,
         ...(hostCapabilities === undefined ? {} : { hostCapabilities }),
         ...(capabilityCompatibility === undefined ? {} : { capabilityCompatibility }),
-      }),
+      });
+    },
     validateBoundary: <TProps, TPayload>(
       definition: ComponentOnceDomDefinition<TProps, THostContext, TPayload>,
       input: ComponentOnceDomBoundaryInput<THostContext>,
     ) => validateDomComponentBoundary(definition, input),
     mountBoundary: <TProps, TPayload>(
       input: ComponentOnceBoundDomBoundaryMountInput<TProps, THostContext, TPayload>,
-    ) =>
-      mountDomComponentBoundary({
-        ...input,
+    ) => {
+      const {
+        hostCapabilities: _callerHostCapabilities,
+        capabilityCompatibility: _callerCapabilityCompatibility,
+        ...boundaryInput
+      } = input as ComponentOnceDomBoundaryMountInput<TProps, THostContext, TPayload>;
+      return mountDomComponentBoundary({
+        ...boundaryInput,
         ...(hostCapabilities === undefined ? {} : { hostCapabilities }),
         ...(capabilityCompatibility === undefined ? {} : { capabilityCompatibility }),
-      }),
+      });
+    },
   };
 }
 

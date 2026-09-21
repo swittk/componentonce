@@ -265,24 +265,36 @@ export function createReactHost<THostContext>(
     ) => defineReactComponent(input),
     render: <TProps, TPayload>(
       input: ComponentOnceBoundReactRendererInput<TProps, THostContext, TPayload>,
-    ) =>
-      renderReactComponent({
-        ...input,
+    ) => {
+      const {
+        hostCapabilities: _callerHostCapabilities,
+        capabilityCompatibility: _callerCapabilityCompatibility,
+        ...renderInput
+      } = input as ComponentOnceReactRendererInput<TProps, THostContext, TPayload>;
+      return renderReactComponent({
+        ...renderInput,
         ...(hostCapabilities === undefined ? {} : { hostCapabilities }),
         ...(capabilityCompatibility === undefined ? {} : { capabilityCompatibility }),
-      }),
+      });
+    },
     validateBoundary: <TProps, TPayload>(
       definition: ComponentOnceReactDefinition<TProps, THostContext, TPayload>,
       input: ComponentOnceReactBoundaryInput<THostContext>,
     ) => validateReactComponentBoundary(definition, input),
     renderBoundary: <TProps, TPayload>(
       input: ComponentOnceBoundReactBoundaryRenderInput<TProps, THostContext, TPayload>,
-    ) =>
-      renderReactComponentBoundary({
-        ...input,
+    ) => {
+      const {
+        hostCapabilities: _callerHostCapabilities,
+        capabilityCompatibility: _callerCapabilityCompatibility,
+        ...boundaryInput
+      } = input as ComponentOnceReactBoundaryRenderInput<TProps, THostContext, TPayload>;
+      return renderReactComponentBoundary({
+        ...boundaryInput,
         ...(hostCapabilities === undefined ? {} : { hostCapabilities }),
         ...(capabilityCompatibility === undefined ? {} : { capabilityCompatibility }),
-      }),
+      });
+    },
   };
 }
 

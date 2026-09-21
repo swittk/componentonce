@@ -1,4 +1,4 @@
-import { ComponentOnceCapabilityVersionError } from "@componentonce/core";
+import { ComponentOnceCapabilityMissingError, ComponentOnceCapabilityVersionError } from "@componentonce/core";
 import { version as reactVersion } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
@@ -270,6 +270,64 @@ describe("React definitions and rendering", () => {
       payload: { message: "different payload" },
     });
     expect(renderToStaticMarkup(messageElement)).toBe("<span>&gt;different payload</span>");
+  });
+
+  it("keeps bound host policy authoritative even when plain JavaScript supplies hidden policy fields", () => {
+    const host = createReactHost<AppContext>();
+    const context: AppContext = {
+      formatTitle: (title) => title,
+      services: { audit: () => undefined },
+    };
+    const missingCapability = host.define<CardProps, CardPayload>({
+      manifest: {
+        id: "example/no-policy-injection",
+        version: "1.0.0",
+        requirements: [
+          createReactRequirement(reactVersion),
+          { name: "example-api", version: "1" },
+        ],
+      },
+      component: ({ props }) => <span>{props.title}</span>,
+      validateProps(input) {
+        return input as CardProps;
+      },
+      validatePayload(input) {
+        return input as CardPayload;
+      },
+    });
+    const injectedCapabilities = {
+      definition: missingCapability,
+      props: { title: "blocked" },
+      context,
+      payload: { recordId: 1 },
+      hostCapabilities: [{ name: "example-api", version: "1" }],
+    };
+    expect(() => host.render(injectedCapabilities)).toThrow(ComponentOnceCapabilityMissingError);
+    expect(() => host.renderBoundary(injectedCapabilities)).toThrow(ComponentOnceCapabilityMissingError);
+
+    const incompatibleReact = host.define<CardProps, CardPayload>({
+      manifest: {
+        id: "example/no-compatibility-injection",
+        version: "1.0.0",
+        requirements: [createReactRequirement("0")],
+      },
+      component: ({ props }) => <span>{props.title}</span>,
+      validateProps(input) {
+        return input as CardProps;
+      },
+      validatePayload(input) {
+        return input as CardPayload;
+      },
+    });
+    const injectedCompatibility = {
+      definition: incompatibleReact,
+      props: { title: "blocked" },
+      context,
+      payload: { recordId: 1 },
+      capabilityCompatibility: () => true,
+    };
+    expect(() => host.render(injectedCompatibility)).toThrow(ComponentOnceCapabilityVersionError);
+    expect(() => host.renderBoundary(injectedCompatibility)).toThrow(ComponentOnceCapabilityVersionError);
   });
 
   it("lets a host deliberately accept a compatible React runtime range", () => {
