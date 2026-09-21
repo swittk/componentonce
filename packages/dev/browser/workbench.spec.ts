@@ -14,7 +14,16 @@ test("workbench loads real host; edits/rebuilds recover; assets clean up; export
   const entry=join(dir,'card.tsx');
   const original=await readFile(entry,'utf8');
   const host=join(dir,'host.ts');
-  await writeFile(host,(await readFile(host,'utf8'))+'\nif (typeof window === "undefined") throw new Error("Host must never run in Node");\n');
+  let hostSource=await readFile(host,'utf8');
+  const exportMarker='export default defineReactDevHost({';
+  const firstFixtureMarker='      props: {\n        title: "Build something worth sharing",';
+  const resultMarker='        return { accepted: true, approved };';
+  if(!hostSource.includes(exportMarker)||!hostSource.includes(firstFixtureMarker)||!hostSource.includes(resultMarker))throw new Error('Example host changed; update browser regression setup');
+  hostSource=hostSource
+    .replace(exportMarker,'const sharedFixtureValue = { marker: "shared-fixture" };\n\n'+exportMarker)
+    .replace(firstFixtureMarker,'      props: {\n        sharedFixtureA: sharedFixtureValue,\n        sharedFixtureB: sharedFixtureValue,\n        title: "Build something worth sharing",')
+    .replace(resultMarker,'        const sharedResult = { marker: "shared-result" };\n        return { accepted: true, approved, first: sharedResult, second: sharedResult };');
+  await writeFile(host,hostSource+'\nif (typeof window === "undefined") throw new Error("Host must never run in Node");\n');
   const server=await createComponentOnceDevServer({entry,host,cwd:resolve('.'),port:0});
   const pageErrors:string[]=[];
   page.on('pageerror',error=>pageErrors.push(error.message));
@@ -37,6 +46,31 @@ test("workbench loads real host; edits/rebuilds recover; assets clean up; export
     await expect(page.locator('#function-calls')).toContainText('brand-fixture');
     await expect(page.locator('#function-calls')).toContainText('Studio North · Brand refresh');
     await expect(page.locator('#function-calls')).toContainText('returned');
+    await expect(page.locator('#function-calls')).toContainText('"first":{"marker":"shared-result"}');
+    await expect(page.locator('#function-calls')).toContainText('"second":{"marker":"shared-result"}');
+    await expect(page.locator('#function-calls')).not.toContainText('[Circular]');
+    await page.evaluate(()=>{
+      const frame=document.querySelector<HTMLIFrameElement>('#preview');
+      if(!frame?.contentWindow)throw new Error('Missing preview frame');
+      const shared={marker:'shared-input'};
+      frame.contentWindow.postMessage({
+        componentonce:true,
+        type:'inputs',
+        value:{
+          props:{
+            title:'Shared reference input',
+            actionLabel:'Approve milestone',
+            onApprove:{$componentonceFunction:'recordApproval'},
+            sharedInputA:shared,
+            sharedInputB:shared,
+          },
+          payload:{project:'Studio North · Brand refresh',amount:4200},
+          context:{locale:'en-US',currency:'USD'},
+        },
+      },window.location.origin);
+    });
+    await expect(preview.locator('h1')).toHaveText('Shared reference input');
+    await expect(page.locator('#error-overlay')).toBeHidden();
     await page.evaluate(()=>{ document.documentElement.dataset.testSentinel='stays'; });
     await page.locator('#props').fill(JSON.stringify({
       title:'My live component',

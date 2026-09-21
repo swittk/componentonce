@@ -84,18 +84,22 @@ function summarizeForWorkbench(
   if (seen.has(value)) return "[Circular]";
   if (depth >= 3) return "[Object]";
   seen.add(value);
-  if (Array.isArray(value)) {
-    const output = value
-      .slice(0, 20)
-      .map((item) => summarizeForWorkbench(item, depth + 1, seen));
-    if (value.length > 20) output.push("… " + (value.length - 20) + " more");
+  try {
+    if (Array.isArray(value)) {
+      const output = value
+        .slice(0, 20)
+        .map((item) => summarizeForWorkbench(item, depth + 1, seen));
+      if (value.length > 20) output.push("… " + (value.length - 20) + " more");
+      return output;
+    }
+    const output: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value).slice(0, 30)) {
+      output[key] = summarizeForWorkbench(item, depth + 1, seen);
+    }
     return output;
+  } finally {
+    seen.delete(value);
   }
-  const output: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value).slice(0, 30)) {
-    output[key] = summarizeForWorkbench(item, depth + 1, seen);
-  }
-  return output;
 }
 
 function assertFixtureHasNoRawFunctions(
@@ -113,14 +117,18 @@ function assertFixtureHasNoRawFunctions(
   if (value === null || typeof value !== "object") return;
   if (seen.has(value)) throw new Error(path + " contains a circular fixture value.");
   seen.add(value);
-  if (Array.isArray(value)) {
-    value.forEach((item, index) =>
-      assertFixtureHasNoRawFunctions(item, path + "[" + index + "]", seen),
-    );
-    return;
-  }
-  for (const [key, item] of Object.entries(value)) {
-    assertFixtureHasNoRawFunctions(item, path + "." + key, seen);
+  try {
+    if (Array.isArray(value)) {
+      value.forEach((item, index) =>
+        assertFixtureHasNoRawFunctions(item, path + "[" + index + "]", seen),
+      );
+      return;
+    }
+    for (const [key, item] of Object.entries(value)) {
+      assertFixtureHasNoRawFunctions(item, path + "." + key, seen);
+    }
+  } finally {
+    seen.delete(value);
   }
 }
 
@@ -270,16 +278,20 @@ export function mountComponentOncePreview(
       throw new Error(path + " contains a circular fixture value.");
     }
     seen.add(value);
-    if (Array.isArray(value)) {
-      return value.map((item, index) =>
-        resolveInputValue(item, path + "[" + index + "]", seen),
-      );
+    try {
+      if (Array.isArray(value)) {
+        return value.map((item, index) =>
+          resolveInputValue(item, path + "[" + index + "]", seen),
+        );
+      }
+      const output: Record<string, unknown> = {};
+      for (const [key, item] of Object.entries(value)) {
+        output[key] = resolveInputValue(item, path + "." + key, seen);
+      }
+      return output;
+    } finally {
+      seen.delete(value);
     }
-    const output: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value)) {
-      output[key] = resolveInputValue(item, path + "." + key, seen);
-    }
-    return output;
   };
 
   const resolveCurrentInput = () => {
