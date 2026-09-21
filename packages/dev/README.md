@@ -6,6 +6,17 @@ It is deliberately not a new runtime, framework, backend, or sandbox. Source cha
 
 ## Quick start
 
+From a source checkout, the built-in example is runnable end to end:
+
+```sh
+corepack pnpm install
+corepack pnpm -r build
+cd packages/dev
+corepack pnpm exec componentonce dev ./examples/card.tsx --host ./examples/host.ts
+```
+
+For a consuming workspace where `@componentonce/dev` and `@componentonce/compiler-esbuild` are installed:
+
 ```sh
 componentonce dev ./src/card.tsx --host ./dev/componentonce-host.ts
 ```
@@ -146,4 +157,16 @@ cd packages/dev
 componentonce dev ./examples/card.tsx --host ./examples/host.ts
 ```
 
-The browser regression test uses the same example and verifies hooks/host context, CSS Module + image rebuilds, fixtures, syntax-error recovery, repeated rebuild cleanup, responsive preview, and exported production-package compatibility.
+The browser regression test uses the same example and verifies:
+
+- real React hooks and host-created Context;
+- a required function-valued Prop resolved from the host's actual/mock callable catalog;
+- callable invocation logging with bound arguments, runtime arguments, and returned results;
+- CSS Module and image asset rebuilds;
+- source/fixture error recovery while the last good preview remains mounted;
+- repeated rebuild resource cleanup;
+- host-defined visual themes;
+- preset and free-drag responsive preview sizing;
+- export of a normal production-compatible ComponentOnce v2 package.
+
+The example intentionally uses generic names (`Portfolio workspace`, `Brand project`, `recordApproval`) and has no dependency on a private application.
