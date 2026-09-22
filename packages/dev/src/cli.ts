@@ -3,13 +3,20 @@ import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { createComponentOnceDevServer } from "./server.js";
 
+const printHelp = () =>
+  console.log("Usage: componentonce dev <entry.tsx> [--host browser-host.ts] [--external exact/specifier] [--port 4173] [--bind 127.0.0.1] [--allowed-host name] [--export definition]\n       componentonce-dev <entry.tsx> [same options]\nLocal trusted-code React workbench. Loopback is the default; --bind 0.0.0.0 explicitly exposes it to local interfaces.");
+
 /** Run the local workbench CLI; Ctrl-C disposes compilers and releases its port. */
 export async function runComponentOnceDevCli(args: readonly string[]): Promise<void> {
-  if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
-    console.log("Usage: componentonce dev <entry.tsx> [--host browser-host.ts] [--external exact/specifier] [--port 4173] [--bind 127.0.0.1] [--allowed-host name] [--export definition]\n       componentonce-dev <entry.tsx> [same options]\nLocal trusted-code React workbench. Loopback is the default; --bind 0.0.0.0 explicitly exposes it to local interfaces.");
+  if (args.length === 0) {
+    printHelp();
     return;
   }
   const entry = args[0];
+  if (entry === "--help" || entry === "-h") {
+    printHelp();
+    return;
+  }
   if (entry === undefined || entry.startsWith("-")) throw new Error("A component entry file is required.");
   let host: string | undefined;
   let port = 4173;
@@ -19,16 +26,32 @@ export async function runComponentOnceDevCli(args: readonly string[]): Promise<v
   const allowedHosts: string[] = [];
   for (let index = 1; index < args.length; index += 1) {
     const flag = args[index];
-    const value = args[++index];
-    if (value === undefined || value.startsWith("--")) throw new Error(String(flag) + " requires a value.");
+    if (flag === "--help" || flag === "-h") {
+      printHelp();
+      return;
+    }
     switch (flag) {
-      case "--host": host = value; break;
-      case "--port": port = Number(value); break;
-      case "--bind": bind = value; break;
-      case "--allowed-host": allowedHosts.push(value); break;
-      case "--export": definitionExport = value; break;
-      case "--external": externalModules.push(value); break;
-      default: throw new Error("Unknown dev option " + flag);
+      case "--host":
+      case "--port":
+      case "--bind":
+      case "--allowed-host":
+      case "--export":
+      case "--external": {
+        const value = args[index + 1];
+        if (value === undefined || value.startsWith("-")) {
+          throw new Error(String(flag) + " requires a value.");
+        }
+        index += 1;
+        if (flag === "--host") host = value;
+        else if (flag === "--port") port = Number(value);
+        else if (flag === "--bind") bind = value;
+        else if (flag === "--allowed-host") allowedHosts.push(value);
+        else if (flag === "--export") definitionExport = value;
+        else externalModules.push(value);
+        break;
+      }
+      default:
+        throw new Error("Unknown dev option " + flag);
     }
   }
   const server = await createComponentOnceDevServer({ entry, port, bind, allowedHosts, externalModules, definitionExport, ...(host === undefined ? {} : { host }) });

@@ -2,6 +2,7 @@ import * as React from "react";
 import * as JsxRuntime from "react/jsx-runtime";
 import * as JsxDevRuntime from "react/jsx-dev-runtime";
 import { createRoot, type Root } from "react-dom/client";
+import { flushSync } from "react-dom";
 import * as ComponentOnceReact from "@componentonce/react";
 import type { ComponentOnceStyleMount } from "@componentonce/runtime";
 import type {
@@ -156,8 +157,9 @@ function isFunctionReference(
 export function mountComponentOncePreview(
   profile: ComponentOnceReactDevHost,
 ): () => void {
-  const node = document.getElementById("preview-root");
-  if (node === null) throw new Error("Missing preview root.");
+  const initialNode = document.getElementById("preview-root");
+  if (initialNode === null) throw new Error("Missing preview root.");
+  let mountNode = initialNode;
   const host = ComponentOnceReact.createReactHost({
     ...(profile.capabilities === undefined
       ? {}
@@ -189,7 +191,6 @@ export function mountComponentOncePreview(
   let root: Root | undefined;
   let generation = 0;
   let revision = 0;
-  let renderKey = 0;
   let callSequence = 0;
   let disposed = false;
   let ready = false;
@@ -286,7 +287,12 @@ export function mountComponentOncePreview(
       }
       const output: Record<string, unknown> = {};
       for (const [key, item] of Object.entries(value)) {
-        output[key] = resolveInputValue(item, path + "." + key, seen);
+        Object.defineProperty(output, key, {
+          value: resolveInputValue(item, path + "." + key, seen),
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
       }
       return output;
     } finally {
@@ -325,19 +331,87 @@ export function mountComponentOncePreview(
     return profile.wrap ? profile.wrap(element, context) : element;
   };
 
+  type StagedPreviewMount = {
+    readonly root: Root;
+    readonly node: HTMLElement;
+    readonly previousNode: HTMLElement;
+    readonly previousId: string;
+    readonly visibility: string;
+    readonly pointerEvents: string;
+  };
+
+  const discardStaged = (staged: StagedPreviewMount) => {
+    try {
+      staged.root.unmount();
+    } finally {
+      staged.node.remove();
+      staged.previousNode.id = staged.previousId;
+    }
+  };
+
+  const stageElement = (element: React.ReactNode): StagedPreviewMount => {
+    const previousNode = mountNode;
+    const previousId = previousNode.id;
+    previousNode.id = "preview-root-last-good";
+    const stagingNode = previousNode.cloneNode(false) as HTMLElement;
+    stagingNode.id = "preview-root";
+    const visibility = stagingNode.style.visibility;
+    const pointerEvents = stagingNode.style.pointerEvents;
+    stagingNode.style.visibility = "hidden";
+    stagingNode.style.pointerEvents = "none";
+    previousNode.after(stagingNode);
+    const stagingRoot = createRoot(stagingNode);
+    let renderError: Error | undefined;
+    const staged: StagedPreviewMount = {
+      root: stagingRoot,
+      node: stagingNode,
+      previousNode,
+      previousId,
+      visibility,
+      pointerEvents,
+    };
+    try {
+      flushSync(() => {
+        stagingRoot.render(
+          <PreviewErrorBoundary onError={(error) => { renderError = error; }}>
+            {element}
+          </PreviewErrorBoundary>,
+        );
+      });
+      if (renderError !== undefined) throw renderError;
+      return staged;
+    } catch (error) {
+      discardStaged(staged);
+      throw error;
+    }
+  };
+
+  const promoteStaged = (staged: StagedPreviewMount) => {
+    const previousRoot = root;
+    staged.previousNode.replaceWith(staged.node);
+    staged.node.style.visibility = staged.visibility;
+    staged.node.style.pointerEvents = staged.pointerEvents;
+    mountNode = staged.node;
+    root = staged.root;
+    try {
+      previousRoot?.unmount();
+    } catch (error) {
+      fail(error);
+    }
+  };
+
   const render = () => {
     if (loaded === undefined || disposed) return;
+    let staged: StagedPreviewMount | undefined;
     try {
-      const element = makeElement(loaded);
-      root ??= createRoot(node);
-      renderKey += 1;
-      root.render(
-        <PreviewErrorBoundary key={renderKey} onError={fail}>
-          {element}
-        </PreviewErrorBoundary>,
-      );
+      staged = stageElement(makeElement(loaded));
+      promoteStaged(staged);
+      staged = undefined;
       send("rendered", { revision });
     } catch (error) {
+      if (staged !== undefined) {
+        try { discardStaged(staged); } catch (cleanupError) { fail(cleanupError); }
+      }
       fail(error);
     }
   };
@@ -346,6 +420,8 @@ export function mountComponentOncePreview(
     if (!ready) return;
     const ticket = ++generation;
     let candidate: ComponentOnceLoadedDevArtifact | undefined;
+    let candidateStyleMount: ComponentOnceStyleMount | undefined;
+    let staged: StagedPreviewMount | undefined;
     try {
       const response = await fetch("/artifact", { cache: "no-store" });
       if (!response.ok) {
@@ -357,23 +433,22 @@ export function mountComponentOncePreview(
         candidate.dispose();
         return;
       }
-      // Fail missing capabilities/invalid fixture values before replacing the last good mount.
       const element = makeElement(candidate);
-      root?.unmount();
-      root = undefined;
-      styleMount?.release();
-      loaded?.dispose();
+      // Candidate styles coexist only for the synchronous staging commit, so render/layout
+      // sees the candidate CSS while the visible last-good mount survives any failure.
+      candidateStyleMount = candidate.assets.mountStyles(document);
+      staged = stageElement(element);
+      const previousStyleMount = styleMount;
+      const previousLoaded = loaded;
+      promoteStaged(staged);
+      staged = undefined;
       loaded = candidate;
       candidate = undefined;
+      styleMount = candidateStyleMount;
+      candidateStyleMount = undefined;
       revision = update.revision;
-      styleMount = loaded.assets.mountStyles(document);
-      root = createRoot(node);
-      renderKey += 1;
-      root.render(
-        <PreviewErrorBoundary key={renderKey} onError={fail}>
-          {element}
-        </PreviewErrorBoundary>,
-      );
+      try { previousStyleMount?.release(); } catch (cleanupError) { fail(cleanupError); }
+      try { previousLoaded?.dispose(); } catch (cleanupError) { fail(cleanupError); }
       send("loaded", {
         revision,
         manifest: loaded.componentPackage.manifest,
@@ -388,7 +463,11 @@ export function mountComponentOncePreview(
         ),
       });
     } catch (error) {
-      candidate?.dispose();
+      if (staged !== undefined) {
+        try { discardStaged(staged); } catch (cleanupError) { fail(cleanupError); }
+      }
+      try { candidateStyleMount?.release(); } catch (cleanupError) { fail(cleanupError); }
+      try { candidate?.dispose(); } catch (cleanupError) { fail(cleanupError); }
       if (!disposed && ticket === generation) fail(error);
     }
   };

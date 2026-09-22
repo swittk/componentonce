@@ -1,4 +1,3 @@
-import * as React from "react";
 import { createReactRequirement, defineReactComponent } from "@componentonce/react";
 import styles from "./asset-card.module.css";
 import logoUrl from "./asset-logo.svg";
@@ -12,7 +11,7 @@ export const definition = defineReactComponent<AssetCardProps, unknown, unknown>
   manifest: {
     id: "example/asset-card",
     version: "1.0.0",
-    requirements: [createReactRequirement(React.version)],
+    requirements: [createReactRequirement("19.3.0")],
   },
   component({ props }) {
     return (

@@ -9,8 +9,8 @@ interface Payload {
 }
 
 /**
- * Application integrations bind their context/payload types and runtime capabilities once.
- * Individual components only choose their own persisted Props type.
+ * Application integrations bind their context type and runtime capabilities once.
+ * Individual components choose their own persisted Props and per-render Payload types.
  */
 export const components = createReactHost<HostContext>({
   capabilities: [{ name: "example-api", version: "1" }],

@@ -13,6 +13,8 @@ test("workbench loads real host; edits/rebuilds recover; assets clean up; export
   await cp(resolve('examples'),dir,{recursive:true});
   const entry=join(dir,'card.tsx');
   const original=await readFile(entry,'utf8');
+  const componentMarker='  component({ props, payload, context }) {\n    const [approved, setApproved] = React.useState(0);';
+  if(!original.includes(componentMarker))throw new Error('Example component changed; update browser regression setup');
   const host=join(dir,'host.ts');
   let hostSource=await readFile(host,'utf8');
   const exportMarker='export default defineReactDevHost({';
@@ -22,7 +24,7 @@ test("workbench loads real host; edits/rebuilds recover; assets clean up; export
   hostSource=hostSource
     .replace(exportMarker,'const sharedFixtureValue = { marker: "shared-fixture" };\n\n'+exportMarker)
     .replace(firstFixtureMarker,'      props: {\n        sharedFixtureA: sharedFixtureValue,\n        sharedFixtureB: sharedFixtureValue,\n        title: "Build something worth sharing",')
-    .replace(resultMarker,'        const sharedResult = { marker: "shared-result" };\n        return { accepted: true, approved, first: sharedResult, second: sharedResult };');
+    .replace(resultMarker,'        const sharedResult = { marker: "shared-result" };\n        return { accepted: true, approved, metadataHasOwnProto: Object.prototype.hasOwnProperty.call(metadata, "__proto__"), first: sharedResult, second: sharedResult };');
   await writeFile(host,hostSource+'\nif (typeof window === "undefined") throw new Error("Host must never run in Node");\n');
   const server=await createComponentOnceDevServer({entry,host,cwd:resolve('.'),port:0});
   const pageErrors:string[]=[];
@@ -98,12 +100,34 @@ test("workbench loads real host; edits/rebuilds recover; assets clean up; export
     await page.getByRole('button',{name:'Apply inputs'}).click();
     await expect(page.locator('#error-overlay')).toBeHidden();
 
+    await page.locator('#props').fill('{"title":"Own proto fixture","actionLabel":"Approve milestone","onApprove":{"$componentonceFunction":"recordApproval","bind":[{"source":"proto-fixture","__proto__":{"marker":"fixture-data"}}]}}');
+    await page.getByRole('button',{name:'Apply inputs'}).click();
+    await expect(preview.locator('h1')).toHaveText('Own proto fixture');
+    await preview.getByRole('button',{name:'Approve milestone'}).click();
+    await expect(page.locator('#function-calls')).toContainText('\"metadataHasOwnProto\":true');
+
+    await page.locator('#props').fill(JSON.stringify({
+      title:'My live component',
+      actionLabel:'Approve milestone',
+      onApprove:{$componentonceFunction:'recordApproval',bind:[{source:'edited-fixture'}]},
+    }));
+    await page.getByRole('button',{name:'Apply inputs'}).click();
+    await expect(preview.locator('h1')).toHaveText('My live component');
+
     await writeFile(entry,original.replace('Interactive React state','Source save is live'));
     await expect(preview.locator('body')).toContainText('Source save is live');
     await expect(preview.locator('h1')).toHaveText('My live component');
     await expect(preview.getByTestId('approved')).toHaveText('0');
     expect(await page.evaluate(()=>document.documentElement.dataset.testSentinel)).toBe('stays');
+    await writeFile(entry,original.replace(componentMarker,componentMarker.replace('    const [approved, setApproved] = React.useState(0);','    throw new Error("candidate render boom");\n    const [approved, setApproved] = React.useState(0);')));
+    await expect(page.locator('#error-overlay')).toBeVisible();
+    await expect(page.locator('#error-overlay-text')).toContainText('candidate render boom');
+    await expect(preview.locator('h1')).toHaveText('My live component');
+    await writeFile(entry,original.replace('Interactive React state','Source save is live'));
+    await expect(page.locator('#error-overlay')).toBeHidden();
+    await expect(preview.locator('body')).toContainText('Source save is live');
     const goodRevision=await page.locator('#revision').innerText();
+
     await writeFile(entry,'export const = bad syntax');
     await expect(page.locator('#diagnostics')).not.toHaveText('No diagnostics.');
     await expect(page.locator('#error-overlay')).toBeVisible();
