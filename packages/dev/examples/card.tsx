@@ -26,7 +26,7 @@ export const definition = defineReactComponent<Props, Context, Payload>({
     version: "1.0.0",
     displayName: "Project card",
     requirements: [
-      createReactRequirement(React.version),
+      createReactRequirement("19.3.0"),
       { name: "example-host", version: "1" },
     ],
   },
