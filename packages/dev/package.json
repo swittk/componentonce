@@ -33,7 +33,9 @@
     "build": "tsc -p tsconfig.json && node ./build-ui.mjs",
     "precheck": "pnpm --filter @componentonce/dev... build",
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "pretest": "pnpm --filter @componentonce/dev... build",
     "test": "vitest run test",
+    "pretest:browser": "pnpm --filter @componentonce/dev... build",
     "test:browser": "playwright test"
   },
   "dependencies": {

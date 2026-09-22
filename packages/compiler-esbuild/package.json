@@ -14,7 +14,9 @@
     }
   },
   "scripts": {
+    "prebuild": "pnpm --filter @componentonce/core build",
     "build": "tsc -p tsconfig.json",
+    "precheck": "pnpm --filter @componentonce/core build",
     "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run"
   },
