@@ -170,10 +170,18 @@ export async function createComponentOnceDevServer(options: ComponentOnceDevServ
     clearInterval(heartbeat);
     for (const connection of connections) connection.end();
     connections.clear();
-    await Promise.all([watcher?.dispose(), harness?.dispose()]);
+    const cleanupResults = await Promise.allSettled([
+      Promise.resolve().then(() => watcher?.dispose()),
+      Promise.resolve().then(() => harness?.dispose()),
+    ]);
     await new Promise<void>((done) => { http.close(() => done()); http.closeAllConnections(); });
     builtFiles.clear();
     currentArtifact = undefined;
+    const cleanupErrors = cleanupResults
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => result.reason);
+    if (cleanupErrors.length === 1) throw cleanupErrors[0];
+    if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, "ComponentOnce dev compiler cleanup failed.");
   };
   try {
     await new Promise<void>((done, reject) => {

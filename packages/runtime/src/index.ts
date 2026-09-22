@@ -227,7 +227,10 @@ export function parseTrustedComponentPackage(
   const common = {
     renderer: requireNonEmptyString(parsed.renderer, "renderer"),
     manifest: parseManifest(parsed.manifest),
-    definitionExport: requireNonEmptyString(parsed.definitionExport, "definitionExport"),
+    definitionExport:
+      parsed.format === COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V1 && parsed.definitionExport === undefined
+        ? COMPONENTONCE_DEFAULT_DEFINITION_EXPORT
+        : requireNonEmptyString(parsed.definitionExport, "definitionExport"),
     bundle: parseBundle(parsed.bundle),
   };
   if (parsed.format === COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V1) {

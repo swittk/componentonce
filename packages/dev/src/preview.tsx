@@ -498,7 +498,9 @@ export function mountComponentOncePreview(
     }
   };
   window.addEventListener("message", onMessage);
+  const onWindowError = (event: ErrorEvent) => fail(event.error ?? event.message);
   const onUnhandled = (event: PromiseRejectionEvent) => fail(event.reason);
+  window.addEventListener("error", onWindowError);
   window.addEventListener("unhandledrejection", onUnhandled);
 
   const dispose = () => {
@@ -506,6 +508,7 @@ export function mountComponentOncePreview(
     disposed = true;
     generation += 1;
     window.removeEventListener("message", onMessage);
+    window.removeEventListener("error", onWindowError);
     window.removeEventListener("unhandledrejection", onUnhandled);
     root?.unmount();
     styleMount?.release();

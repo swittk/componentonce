@@ -316,9 +316,9 @@ export function parseTrustedComponentPackage(
   const renderer = requireNonEmptyString(parsed.renderer, "renderer");
   const manifest = copyManifest(parsed.manifest as unknown as ComponentOnceManifest);
   const definitionExport =
-    typeof parsed.definitionExport === "string"
-      ? requireNonEmptyString(parsed.definitionExport, "definitionExport")
-      : COMPONENTONCE_DEFAULT_DEFINITION_EXPORT;
+    parsed.format === COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V1 && parsed.definitionExport === undefined
+      ? COMPONENTONCE_DEFAULT_DEFINITION_EXPORT
+      : requireNonEmptyString(parsed.definitionExport, "definitionExport");
   if (parsed.format === COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V1) {
     return deepFreeze({
       format: COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V1,

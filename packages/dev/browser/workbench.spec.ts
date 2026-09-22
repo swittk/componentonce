@@ -25,7 +25,8 @@ test("workbench loads real host; edits/rebuilds recover; assets clean up; export
     .replace(exportMarker,'const sharedFixtureValue = { marker: "shared-fixture" };\n\n'+exportMarker)
     .replace(firstFixtureMarker,'      props: {\n        sharedFixtureA: sharedFixtureValue,\n        sharedFixtureB: sharedFixtureValue,\n        title: "Build something worth sharing",')
     .replace(resultMarker,'        const sharedResult = { marker: "shared-result" };\n        return { accepted: true, approved, metadataHasOwnProto: Object.prototype.hasOwnProperty.call(metadata, "__proto__"), first: sharedResult, second: sharedResult };');
-  await writeFile(host,hostSource+'\nif (typeof window === "undefined") throw new Error("Host must never run in Node");\n');
+  const browserHostSource=hostSource+'\nif (typeof window === "undefined") throw new Error("Host must never run in Node");\n';
+  await writeFile(host,browserHostSource);
   const server=await createComponentOnceDevServer({entry,host,cwd:resolve('.'),port:0});
   const pageErrors:string[]=[];
   page.on('pageerror',error=>pageErrors.push(error.message));
@@ -51,6 +52,14 @@ test("workbench loads real host; edits/rebuilds recover; assets clean up; export
     await expect(page.locator('#function-calls')).toContainText('"first":{"marker":"shared-result"}');
     await expect(page.locator('#function-calls')).toContainText('"second":{"marker":"shared-result"}');
     await expect(page.locator('#function-calls')).not.toContainText('[Circular]');
+
+    await writeFile(host,browserHostSource+'\n// Force one host rebuild to reset the preview call-id namespace.\n');
+    await expect(page.locator('#function-calls')).toHaveText('No calls yet.',{timeout:15000});
+    await expect(preview.locator('h1')).toHaveText('Build something worth sharing');
+    await preview.getByRole('button',{name:'Approve milestone'}).click();
+    await expect(page.locator('#function-calls .function-call')).toHaveCount(1);
+    await expect(page.locator('#function-calls')).toContainText('recordApproval');
+
     await page.evaluate(()=>{
       const frame=document.querySelector<HTMLIFrameElement>('#preview');
       if(!frame?.contentWindow)throw new Error('Missing preview frame');
@@ -81,6 +90,15 @@ test("workbench loads real host; edits/rebuilds recover; assets clean up; export
     }));
     await page.getByRole('button',{name:'Apply inputs'}).click();
     await expect(preview.locator('h1')).toHaveText('My live component');
+
+    await preview.getByRole('button',{name:'Approve milestone'}).evaluate((button)=>{
+      button.addEventListener('click',()=>{throw new Error('event handler boom');},{once:true});
+    });
+    await preview.getByRole('button',{name:'Approve milestone'}).click();
+    await expect(page.locator('#error-overlay')).toBeVisible();
+    await expect(page.locator('#error-overlay-text')).toContainText('event handler boom');
+    await page.getByRole('button',{name:'Apply inputs'}).click();
+    await expect(page.locator('#error-overlay')).toBeHidden();
 
     await page.locator('#props').fill(JSON.stringify({
       title:'Broken function reference',
@@ -185,6 +203,6 @@ test("workbench loads real host; edits/rebuilds recover; assets clean up; export
     await page.locator('#fixtures').selectOption('0');
     await mkdir(resolve('../../.artifacts/dev'),{recursive:true});
     await page.screenshot({path:resolve('../../.artifacts/dev/workbench.png')});
-    expect(pageErrors).toEqual([]);
+    expect(pageErrors.filter((message)=>!message.includes('event handler boom'))).toEqual([]);
   } finally {await server.close();await rm(dir,{recursive:true,force:true});}
 });

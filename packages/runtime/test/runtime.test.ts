@@ -276,6 +276,20 @@ describe("browser-safe trusted runtime", () => {
     ).rejects.toBeInstanceOf(ComponentOncePackageManifestMismatchError);
   });
 
+  it("defaults only legacy v1 packages to the conventional definition export", async () => {
+    const v1 = await createPackage(
+      'module.exports.definition = { manifest: { id: "example/card", version: "1.0.0" }, implementation: () => 1 };',
+    );
+    const missingV1Export = { ...v1 } as Record<string, unknown>;
+    delete missingV1Export.definitionExport;
+    expect(parseTrustedComponentPackage(JSON.stringify(missingV1Export)).definitionExport).toBe("definition");
+
+    const v2 = await createAssetPackage();
+    const missingV2Export = { ...v2 } as Record<string, unknown>;
+    delete missingV2Export.definitionExport;
+    expect(() => parseTrustedComponentPackage(JSON.stringify(missingV2Export))).toThrow(/definitionExport/u);
+  });
+
   it("rejects malformed package metadata without executing code", () => {
     expect(() =>
       parseTrustedComponentPackage(

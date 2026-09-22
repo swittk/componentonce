@@ -188,6 +188,9 @@ events.addEventListener("status", (event) => {
   if (latest.host.hostRevision !== hostRevision && latest.host.hostRevision > 0) {
     hostRevision = latest.host.hostRevision;
     ready = false; requestedRevision = 0;
+    functionCalls.clear();
+    functionCallOrder.splice(0, functionCallOrder.length);
+    renderFunctionCalls();
     frame.src = "/preview?host=" + hostRevision;
   }
   requestArtifact();

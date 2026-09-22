@@ -286,6 +286,15 @@ describe("compileTrustedReactModule", () => {
     const parsed = parseTrustedComponentPackage(stored);
     expect(parsed.manifest.id).toBe("example.counter");
 
+    const legacyStored = JSON.parse(stored) as Record<string, unknown>;
+    legacyStored.format = "componentonce.trusted-package.v1";
+    delete legacyStored.definitionExport;
+    expect(parseTrustedComponentPackage(JSON.stringify(legacyStored)).definitionExport).toBe("definition");
+
+    const currentStored = JSON.parse(stored) as Record<string, unknown>;
+    delete currentStored.definitionExport;
+    expect(() => parseTrustedComponentPackage(JSON.stringify(currentStored))).toThrow(/definitionExport/u);
+
     const definition = instantiateTrustedComponentPackage<CounterDefinition>(parsed, {
       externals: {
         react: React,
