@@ -22,7 +22,8 @@ test("workbench loads real host; edits/rebuilds recover; assets clean up; export
   const resultMarker='        return { accepted: true, approved };';
   if(!hostSource.includes(exportMarker)||!hostSource.includes(firstFixtureMarker)||!hostSource.includes(resultMarker))throw new Error('Example host changed; update browser regression setup');
   hostSource=hostSource
-    .replace(exportMarker,'const sharedFixtureValue = { marker: "shared-fixture" };\n\n'+exportMarker)
+    .replace('import { defineReactDevHost } from "@componentonce/dev/host";','import { defineReactDevHost } from "@componentonce/dev/host";\nimport * as React from "react";')
+    .replace(exportMarker,'const sharedFixtureValue = { marker: "shared-fixture" };\n\n'+exportMarker+'\n  wrap(element) { return React.createElement(React.StrictMode, null, element); },')
     .replace(firstFixtureMarker,'      props: {\n        sharedFixtureA: sharedFixtureValue,\n        sharedFixtureB: sharedFixtureValue,\n        title: "Build something worth sharing",')
     .replace(resultMarker,'        const sharedResult = { marker: "shared-result" };\n        return { accepted: true, approved, metadataHasOwnProto: Object.prototype.hasOwnProperty.call(metadata, "__proto__"), first: sharedResult, second: sharedResult };');
   const browserHostSource=hostSource+'\nif (typeof window === "undefined") throw new Error("Host must never run in Node");\n';
@@ -46,6 +47,7 @@ test("workbench loads real host; edits/rebuilds recover; assets clean up; export
     await expect(page.locator('#function-catalog')).toContainText('recordApproval');
     await expect(page.locator('#function-catalog')).toContainText('mock');
     await expect(page.locator('#function-calls')).toContainText('recordApproval');
+    await expect(page.locator('#function-calls .function-call')).toHaveCount(1);
     await expect(page.locator('#function-calls')).toContainText('brand-fixture');
     await expect(page.locator('#function-calls')).toContainText('Studio North · Brand refresh');
     await expect(page.locator('#function-calls')).toContainText('returned');

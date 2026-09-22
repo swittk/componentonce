@@ -102,13 +102,11 @@ export const definition = defineReactComponent<Props, Context, Payload>({
         <div className={styles.bottom}>
           <span>Interactive React state</span>
           <button
-            onClick={() =>
-              setApproved((count) => {
-                const next = count + 1;
-                props.onApprove(next, payload.project);
-                return next;
-              })
-            }
+            onClick={() => {
+              const next = approved + 1;
+              setApproved(next);
+              props.onApprove(next, payload.project);
+            }}
           >
             {props.actionLabel}
           </button>
