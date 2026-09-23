@@ -1,0 +1,10 @@
+@font-face {
+  font-family: "Asset Card Sans";
+  src: url("./asset-card.woff2") format("woff2");
+}
+
+.card {
+  display: flex;
+  gap: 0.75rem;
+  font-family: "Asset Card Sans", sans-serif;
+}

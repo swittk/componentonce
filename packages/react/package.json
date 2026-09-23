@@ -1,0 +1,44 @@
+{
+  "name": "@componentonce/react",
+  "version": "0.1.0-beta.2",
+  "type": "module",
+  "files": [
+    "dist",
+    "examples",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "precheck": "pnpm --filter @componentonce/core build",
+    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "pretest": "pnpm --filter @componentonce/core build",
+    "test": "vitest run",
+    "prebuild": "pnpm --filter @componentonce/core build",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@componentonce/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "devDependencies": {
+    "@types/react-dom": "^19.2.2",
+    "@types/react": "^19.2.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.5"
+  },
+  "description": "React adapter for trusted ComponentOnce components using the host React runtime.",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "name": "@componentonce/compiler-esbuild",
+  "version": "0.1.0-beta.2",
+  "type": "module",
+  "files": [
+    "dist",
+    "examples",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "prebuild": "pnpm --filter @componentonce/core build",
+    "build": "tsc -p tsconfig.json",
+    "precheck": "pnpm --filter @componentonce/core build",
+    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@componentonce/core": "workspace:*",
+    "esbuild": "^0.27.0",
+    "import-meta-resolve": "^4.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.5"
+  },
+  "description": "Optional esbuild compiler and trusted loader for dynamically loaded ComponentOnce modules.",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  },
+  "bin": {
+    "componentonce": "./dist/cli.js"
+  },
+  "peerDependencies": {
+    "@componentonce/dom": "workspace:*",
+    "@componentonce/react": "workspace:*",
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "@componentonce/dom": {
+      "optional": true
+    },
+    "@componentonce/react": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  }
+}
