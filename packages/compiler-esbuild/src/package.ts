@@ -316,9 +316,9 @@ export function parseTrustedComponentPackage(
   const renderer = requireNonEmptyString(parsed.renderer, "renderer");
   const manifest = copyManifest(parsed.manifest as unknown as ComponentOnceManifest);
   const definitionExport =
-    typeof parsed.definitionExport === "string"
-      ? requireNonEmptyString(parsed.definitionExport, "definitionExport")
-      : COMPONENTONCE_DEFAULT_DEFINITION_EXPORT;
+    parsed.format === COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V1 && parsed.definitionExport === undefined
+      ? COMPONENTONCE_DEFAULT_DEFINITION_EXPORT
+      : requireNonEmptyString(parsed.definitionExport, "definitionExport");
   if (parsed.format === COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V1) {
     return deepFreeze({
       format: COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V1,
@@ -453,9 +453,10 @@ function copyManifest(manifest: ComponentOnceManifest): ComponentOnceManifest {
   }
   const id = requireNonEmptyString(manifest.id, "manifest.id");
   const version = requireNonEmptyString(manifest.version, "manifest.version");
-  if (manifest.displayName !== undefined && typeof manifest.displayName !== "string") {
-    throw new TypeError("manifest.displayName must be a string when supplied.");
-  }
+  const displayName =
+    manifest.displayName === undefined
+      ? undefined
+      : requireNonEmptyString(manifest.displayName, "manifest.displayName");
   const requirements = manifest.requirements?.map((requirement, index) => {
     if (!isRecord(requirement)) {
       throw new TypeError("manifest.requirements[" + index + "] must be an object.");
@@ -474,7 +475,7 @@ function copyManifest(manifest: ComponentOnceManifest): ComponentOnceManifest {
   return {
     id,
     version,
-    ...(manifest.displayName === undefined ? {} : { displayName: manifest.displayName }),
+    ...(displayName === undefined ? {} : { displayName }),
     ...(requirements === undefined ? {} : { requirements }),
   };
 }
@@ -484,8 +485,13 @@ function sameManifest(left: ComponentOnceManifest, right: ComponentOnceManifest)
 }
 
 function requireNonEmptyString(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new TypeError(field + " must be a non-empty string.");
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value !== value.trim() ||
+    /[\0\r\n]/u.test(value)
+  ) {
+    throw new TypeError(field + " must be a non-empty stable string.");
   }
   return value;
 }

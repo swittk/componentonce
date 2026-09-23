@@ -1,8 +1,10 @@
 #!/usr/bin/env node
+import { existsSync, realpathSync } from "node:fs";
+import { resolve as resolveEsm } from "import-meta-resolve";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { basename, dirname, extname, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   buildTrustedDefinitionPackage,
   buildTrustedReactPackage,
@@ -30,6 +32,21 @@ const DOM_HOST_EXTERNALS = ["@componentonce/dom"] as const;
 
 /** Run the ComponentOnce command line interface with ordinary process arguments. */
 export async function runComponentOnceCli(args: readonly string[]): Promise<void> {
+  if (args[0] === "dev") {
+    // Optional tooling is resolved from the consuming workspace: no dependency cycle.
+    const requireFromConsumer = createRequire(resolve(process.cwd(), "package.json"));
+    let entry: string | undefined;
+    try { entry = requireFromConsumer.resolve("@componentonce/dev"); }
+    catch {
+      // Source-workspace fallback for this monorepo only. Published consumers resolve above.
+      const sibling = resolve(dirname(fileURLToPath(import.meta.url)), "../../dev/dist/index.js");
+      if (existsSync(sibling)) entry = sibling;
+    }
+    if (entry === undefined) throw new Error("Install @componentonce/dev in this workspace to use componentonce dev.");
+    const tooling = await import(pathToFileURL(entry).href) as { runComponentOnceDevCli(args: readonly string[]): Promise<void> };
+    await tooling.runComponentOnceDevCli(args.slice(1));
+    return;
+  }
   if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
     process.stdout.write(usage());
     return;
@@ -203,10 +220,13 @@ async function loadExternals(
   specifiers: readonly string[],
   sourceDir: string,
 ): Promise<Record<string, unknown>> {
-  const resolver = createRequire(pathToFileURL(resolve(sourceDir, "__componentonce_resolve__.mjs")));
+  const parentUrl = pathToFileURL(
+    resolve(sourceDir, "__componentonce_resolve__.mjs"),
+  ).href;
+  const resolver = createRequire(parentUrl);
   const externals: Record<string, unknown> = {};
   for (const specifier of specifiers) {
-    externals[specifier] = await loadExternal(specifier, resolver);
+    externals[specifier] = await loadExternal(specifier, resolver, parentUrl);
   }
   return externals;
 }
@@ -214,12 +234,19 @@ async function loadExternals(
 async function loadExternal(
   specifier: string,
   resolver: NodeJS.Require,
+  parentUrl: string,
 ): Promise<unknown> {
   try {
     return resolver(specifier);
   } catch (error: unknown) {
     if (!canRetryAsEsm(error)) throw error;
-    return import(specifier);
+    let resolved: string;
+    try {
+      resolved = resolveEsm(specifier, parentUrl);
+    } catch {
+      throw error;
+    }
+    return import(resolved);
   }
 }
 
@@ -238,6 +265,7 @@ function usage(): string {
     "ComponentOnce trusted component builder",
     "",
     "Usage:",
+    "  componentonce dev <entry> [--host <browser-profile.ts>] [--port <port>] [--bind <address>] (requires @componentonce/dev)",
     "  componentonce build <entry> [options]",
     "",
     "Options:",
@@ -256,8 +284,23 @@ function usage(): string {
   ].join("\n");
 }
 
-runComponentOnceCli(process.argv.slice(2)).catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write("componentonce: " + message + "\n");
-  process.exitCode = 1;
-});
+function isDirectExecution(): boolean {
+  const invoked = process.argv[1];
+  if (invoked === undefined) return false;
+  try {
+    return (
+      realpathSync(resolve(invoked)) ===
+      realpathSync(fileURLToPath(import.meta.url))
+    );
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectExecution()) {
+  runComponentOnceCli(process.argv.slice(2)).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write("componentonce: " + message + "\n");
+    process.exitCode = 1;
+  });
+}

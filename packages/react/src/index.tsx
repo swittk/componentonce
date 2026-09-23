@@ -179,11 +179,13 @@ export function defineReactComponent<TProps, THostContext, TPayload>(
 export function renderReactComponent<TProps, THostContext, TPayload>(
   input: ComponentOnceReactRendererInput<TProps, THostContext, TPayload>,
 ): ReactElement {
-  assertComponentOnceCompatible(
-    input.definition.manifest,
-    withReactCapability(input.hostCapabilities),
-    input.capabilityCompatibility,
-  );
+  assertReactCompatible(input);
+  return renderCompatibleReactComponent(input);
+}
+
+function renderCompatibleReactComponent<TProps, THostContext, TPayload>(
+  input: ComponentOnceReactRendererInput<TProps, THostContext, TPayload>,
+): ReactElement {
   const validation = normalizeValidation(input.validation);
   const props = validation.props
     ? validateField(input.definition, "props", input.props)
@@ -211,21 +213,27 @@ export function validateReactComponentBoundary<TProps, THostContext, TPayload>(
   };
 }
 
-/** Validate unknown boundary values and render the resulting typed React input. */
+/** Check compatibility, validate unknown boundary values, then render without repeated checks. */
 export function renderReactComponentBoundary<TProps, THostContext, TPayload>(
   input: ComponentOnceReactBoundaryRenderInput<TProps, THostContext, TPayload>,
 ): ReactElement {
+  assertReactCompatible(input);
   const validated = validateReactComponentBoundary(input.definition, input);
-  return renderReactComponent({
+  return renderCompatibleReactComponent({
     definition: input.definition,
     ...validated,
-    ...(input.hostCapabilities === undefined
-      ? {}
-      : { hostCapabilities: input.hostCapabilities }),
-    ...(input.capabilityCompatibility === undefined
-      ? {}
-      : { capabilityCompatibility: input.capabilityCompatibility }),
   });
+}
+
+function assertReactCompatible<TProps, THostContext, TPayload>(
+  input: ComponentOnceReactRendererInput<TProps, THostContext, TPayload> |
+    ComponentOnceReactBoundaryRenderInput<TProps, THostContext, TPayload>,
+): void {
+  assertComponentOnceCompatible(
+    input.definition.manifest,
+    withReactCapability(input.hostCapabilities),
+    input.capabilityCompatibility,
+  );
 }
 
 /** Create concise definition and rendering helpers pinned to one host's own types. */
@@ -265,24 +273,36 @@ export function createReactHost<THostContext>(
     ) => defineReactComponent(input),
     render: <TProps, TPayload>(
       input: ComponentOnceBoundReactRendererInput<TProps, THostContext, TPayload>,
-    ) =>
-      renderReactComponent({
-        ...input,
+    ) => {
+      const {
+        hostCapabilities: _callerHostCapabilities,
+        capabilityCompatibility: _callerCapabilityCompatibility,
+        ...renderInput
+      } = input as ComponentOnceReactRendererInput<TProps, THostContext, TPayload>;
+      return renderReactComponent({
+        ...renderInput,
         ...(hostCapabilities === undefined ? {} : { hostCapabilities }),
         ...(capabilityCompatibility === undefined ? {} : { capabilityCompatibility }),
-      }),
+      });
+    },
     validateBoundary: <TProps, TPayload>(
       definition: ComponentOnceReactDefinition<TProps, THostContext, TPayload>,
       input: ComponentOnceReactBoundaryInput<THostContext>,
     ) => validateReactComponentBoundary(definition, input),
     renderBoundary: <TProps, TPayload>(
       input: ComponentOnceBoundReactBoundaryRenderInput<TProps, THostContext, TPayload>,
-    ) =>
-      renderReactComponentBoundary({
-        ...input,
+    ) => {
+      const {
+        hostCapabilities: _callerHostCapabilities,
+        capabilityCompatibility: _callerCapabilityCompatibility,
+        ...boundaryInput
+      } = input as ComponentOnceReactBoundaryRenderInput<TProps, THostContext, TPayload>;
+      return renderReactComponentBoundary({
+        ...boundaryInput,
         ...(hostCapabilities === undefined ? {} : { hostCapabilities }),
         ...(capabilityCompatibility === undefined ? {} : { capabilityCompatibility }),
-      }),
+      });
+    },
   };
 }
 

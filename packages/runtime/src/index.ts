@@ -227,7 +227,10 @@ export function parseTrustedComponentPackage(
   const common = {
     renderer: requireNonEmptyString(parsed.renderer, "renderer"),
     manifest: parseManifest(parsed.manifest),
-    definitionExport: requireNonEmptyString(parsed.definitionExport, "definitionExport"),
+    definitionExport:
+      parsed.format === COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V1 && parsed.definitionExport === undefined
+        ? COMPONENTONCE_DEFAULT_DEFINITION_EXPORT
+        : requireNonEmptyString(parsed.definitionExport, "definitionExport"),
     bundle: parseBundle(parsed.bundle),
   };
   if (parsed.format === COMPONENTONCE_TRUSTED_PACKAGE_FORMAT_V1) {
@@ -631,13 +634,25 @@ function isNonNegativeSafeInteger(value: unknown): value is number { return Numb
 function isDocument(root: Document | ShadowRoot): root is Document { return root.nodeType === 9; }
 function sanitizeSourceName(value: string): string { return value.replace(/[\r\n\u2028\u2029]/gu, "_"); }
 
+const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const BASE64_REVERSE = (() => {
+  const table = new Int8Array(128).fill(-1);
+  for (let index = 0; index < BASE64_ALPHABET.length; index += 1) {
+    table[BASE64_ALPHABET.charCodeAt(index)] = index;
+  }
+  return table;
+})();
+
 function decodeBase64(value: string): Uint8Array {
   const decodedLength = decodedBase64ByteLength(value);
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   const bytes = new Uint8Array(decodedLength);
   let output = 0;
   for (let index = 0; index < value.length; index += 4) {
-    const combined = (alphabet.indexOf(value[index]!) << 18) | (alphabet.indexOf(value[index + 1]!) << 12) | ((value[index + 2] === "=" ? 0 : alphabet.indexOf(value[index + 2]!)) << 6) | (value[index + 3] === "=" ? 0 : alphabet.indexOf(value[index + 3]!));
+    const combined =
+      (BASE64_REVERSE[value.charCodeAt(index)]! << 18) |
+      (BASE64_REVERSE[value.charCodeAt(index + 1)]! << 12) |
+      ((value[index + 2] === "=" ? 0 : BASE64_REVERSE[value.charCodeAt(index + 2)]!) << 6) |
+      (value[index + 3] === "=" ? 0 : BASE64_REVERSE[value.charCodeAt(index + 3)]!);
     if (output < bytes.length) bytes[output++] = (combined >> 16) & 255;
     if (output < bytes.length) bytes[output++] = (combined >> 8) & 255;
     if (output < bytes.length) bytes[output++] = combined & 255;

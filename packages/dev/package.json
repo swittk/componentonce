@@ -1,0 +1,62 @@
+{
+  "name": "@componentonce/dev",
+  "version": "0.1.0-beta.2",
+  "type": "module",
+  "license": "MIT",
+  "description": "Optional local ComponentOnce React workbench with production-compiler source watching and real host profiles.",
+  "files": [
+    "dist",
+    "examples",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./host": {
+      "types": "./dist/host.d.ts",
+      "import": "./dist/host.js",
+      "default": "./dist/host.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js",
+      "default": "./dist/client.js"
+    }
+  },
+  "bin": {
+    "componentonce-dev": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node ./build-ui.mjs",
+    "precheck": "pnpm --filter @componentonce/dev... build",
+    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "pretest": "pnpm --filter @componentonce/dev... build",
+    "test": "vitest run test",
+    "pretest:browser": "pnpm --filter @componentonce/dev... build",
+    "test:browser": "playwright test"
+  },
+  "dependencies": {
+    "@componentonce/compiler-esbuild": "workspace:*",
+    "@componentonce/core": "workspace:*",
+    "@componentonce/react": "workspace:*",
+    "@componentonce/runtime": "workspace:*",
+    "esbuild": "^0.27.0"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.5"
+  }
+}

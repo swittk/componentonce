@@ -95,6 +95,10 @@ Browser-safe trusted package loading and execution. It parses the same self-desc
 
 Optional trusted build tooling. It supports low-level compilation plus self-describing package helpers and the `componentonce build` CLI. Relative JavaScript, CSS, CSS Module, and static-file imports can be bundled; package/runtime imports stay explicit host externals.
 
+### `@componentonce/dev`
+
+Optional local React development workbench. `componentonce dev` watches the full source/import/asset graph through the production compiler, executes the result against a browser-only real host profile and shared React singleton, keeps Props/Context/Payload fixtures separate, resolves host-defined actual/mock callable references into real function-valued Props/Payload while logging invocations, retains the last good preview across compile failures, and can export an ordinary v2 package. It defaults to loopback-only trusted-code tooling, with explicit configurable interface binding for LAN/device testing; it is not a production server or sandbox.
+
 ## Compatibility
 
 A manifest can require multiple named capabilities, for example React plus an application SDK. Exact name/version equality is the default. Hosts can supply another compatibility predicate when they intentionally support ranges or other version policies.
