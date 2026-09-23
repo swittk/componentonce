@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { resolve as resolveEsm } from "import-meta-resolve";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -284,10 +284,20 @@ function usage(): string {
   ].join("\n");
 }
 
-if (
-  process.argv[1] !== undefined &&
-  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
-) {
+function isDirectExecution(): boolean {
+  const invoked = process.argv[1];
+  if (invoked === undefined) return false;
+  try {
+    return (
+      realpathSync(resolve(invoked)) ===
+      realpathSync(fileURLToPath(import.meta.url))
+    );
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectExecution()) {
   runComponentOnceCli(process.argv.slice(2)).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write("componentonce: " + message + "\n");

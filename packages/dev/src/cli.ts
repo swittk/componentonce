@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { realpathSync } from "node:fs";
 import { createComponentOnceDevServer } from "./server.js";
 
 const printHelp = () =>
@@ -71,6 +72,22 @@ export async function runComponentOnceDevCli(args: readonly string[]): Promise<v
   });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  runComponentOnceDevCli(process.argv.slice(2)).catch((error: unknown) => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });
+function isDirectExecution(): boolean {
+  const invoked = process.argv[1];
+  if (invoked === undefined) return false;
+  try {
+    return (
+      realpathSync(resolve(invoked)) ===
+      realpathSync(fileURLToPath(import.meta.url))
+    );
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectExecution()) {
+  runComponentOnceDevCli(process.argv.slice(2)).catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
 }

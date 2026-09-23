@@ -1,9 +1,14 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { expect, it } from "vitest";
 import { runComponentOnceCli } from "../src/cli.js";
 import { parseTrustedComponentPackage } from "../src/package.js";
+
+const execFileAsync = promisify(execFile);
 
 it("resolves import-only ESM externals from the component entry directory", async () => {
   const root = await mkdtemp(join(tmpdir(), "componentonce-cli-esm-"));
@@ -57,6 +62,22 @@ it("resolves import-only ESM externals from the component entry directory", asyn
     expect(componentPackage.bundle.externalModules).toContain(
       "fixture-import-only",
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+
+it("runs the built CLI when invoked through a symlink", async () => {
+  const root = await mkdtemp(join(tmpdir(), "componentonce-cli-link-"));
+  try {
+    const target = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
+    const link = join(root, "componentonce");
+    await symlink(target, link);
+    const { stdout, stderr } = await execFileAsync(process.execPath, [link, "--help"]);
+    expect(stdout).toContain("ComponentOnce trusted component builder");
+    expect(stdout).toContain("Usage:");
+    expect(stderr).toBe("");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
