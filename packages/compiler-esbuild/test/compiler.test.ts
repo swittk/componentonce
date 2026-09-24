@@ -3,7 +3,7 @@ import type { ComponentType } from "react";
 import * as React from "react";
 import * as jsxRuntime from "react/jsx-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -197,12 +197,61 @@ describe("compileTrustedReactModule", () => {
       name: "ComponentOnceCompileError",
       diagnostics: [
         expect.objectContaining({
-          text: expect.stringContaining("additionalExternalModules"),
+          text: expect.stringContaining("bundleModules"),
         }),
       ],
     });
   });
 
+
+  it("bundles explicitly allowed bare implementation packages into the artifact", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "componentonce-bundle-module-"));
+    try {
+      const packageDir = join(dir, "node_modules", "fixture-bundled");
+      await mkdir(packageDir, { recursive: true });
+      await writeFile(
+        join(packageDir, "package.json"),
+        JSON.stringify({
+          name: "fixture-bundled",
+          version: "1.0.0",
+          type: "module",
+          exports: "./index.js",
+        }),
+      );
+      await writeFile(
+        join(packageDir, "index.js"),
+        'export const decorate = (value) => "[" + value + "]";\n',
+      );
+
+      const artifact = await compileTrustedModule({
+        source:
+          'import { decorate } from "fixture-bundled"; export const value = decorate("BUNDLED");',
+        sourceFileName: "entry.ts",
+        resolveDir: dir,
+        bundleModules: ["fixture-bundled"],
+      });
+
+      expect(artifact.externalModules).toEqual([]);
+      expect(artifact.code).toContain("BUNDLED");
+      const loaded = instantiateTrustedBundle<{ readonly value: string }>(
+        artifact,
+        { externals: {} },
+      );
+      expect(loaded.value).toBe("[BUNDLED]");
+
+      await expect(
+        compileTrustedModule({
+          source: 'import value from "fixture-bundled"; export { value };',
+          sourceFileName: "entry.ts",
+          resolveDir: dir,
+          externalModules: ["fixture-bundled"],
+          bundleModules: ["fixture-bundled"],
+        }),
+      ).rejects.toThrow("cannot be both bundled and external");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 
   it("bundles relative source imports when resolveDir is supplied", async () => {
     const artifact = await compileTrustedModule({

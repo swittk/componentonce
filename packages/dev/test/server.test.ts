@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { request } from "node:http";
@@ -75,3 +75,49 @@ it("can bind all interfaces explicitly while retaining Host validation", async (
     await rm(dir,{recursive:true,force:true});
   }
 },20000);
+
+
+it("serves artifacts that bundle explicitly allowed bare implementation packages", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "componentonce-server-bundle-"));
+  const entry = join(dir, "entry.ts");
+  const packageDir = join(dir, "node_modules", "fixture-dev-bundle");
+  await mkdir(packageDir, { recursive: true });
+  await writeFile(
+    join(packageDir, "package.json"),
+    JSON.stringify({
+      name: "fixture-dev-bundle",
+      version: "1.0.0",
+      type: "module",
+      exports: "./index.js",
+    }),
+  );
+  await writeFile(
+    join(packageDir, "index.js"),
+    'export const id = "test/dev-bundled";\n',
+  );
+  await writeFile(
+    entry,
+    'import { id } from "fixture-dev-bundle"; export const definition={manifest:{id,version:"1"},implementation:()=>null};',
+  );
+  const server = await createComponentOnceDevServer({
+    entry,
+    cwd: dir,
+    port: 0,
+    bundleModules: ["fixture-dev-bundle"],
+  });
+  try {
+    await waitFor(server.url, (state) => state.source.ok);
+    const artifact = (await (
+      await fetch(server.url + "/artifact")
+    ).json()) as {
+      artifact: { externalModules: readonly string[]; code: string };
+    };
+    expect(artifact.artifact.externalModules).not.toContain(
+      "fixture-dev-bundle",
+    );
+    expect(artifact.artifact.code).toContain("test/dev-bundled");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20000);

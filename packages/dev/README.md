@@ -170,3 +170,14 @@ The browser regression test uses the same example and verifies:
 - export of a normal production-compatible ComponentOnce v2 package.
 
 The example intentionally uses generic names (`Portfolio workspace`, `Brand project`, `recordApproval`) and has no dependency on a private application.
+
+
+## Bundle vs external during development
+
+The workbench uses the same import ownership rule as production builds.
+
+    componentonce dev ./src/card.tsx       --host ./dev/componentonce-host.ts       --external @my-app/sdk       --bundle @my-team/card-formatters
+
+External is host ABI. Bundle is component implementation and is compiled into
+the artifact. This prevents a component from working in development only
+because the host happens to have a private implementation library installed.

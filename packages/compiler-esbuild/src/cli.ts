@@ -18,6 +18,7 @@ interface CliBuildOptions {
   readonly out: string;
   readonly definitionExport?: string;
   readonly externalModules: readonly string[];
+  readonly bundleModules: readonly string[];
   readonly loaders: Readonly<Record<string, ComponentOnceAdditionalLoader>>;
   readonly contentTypes: Readonly<Record<string, string>>;
 }
@@ -73,6 +74,7 @@ export async function runComponentOnceCli(args: readonly string[]): Promise<void
           sourceFileName: basename(entryPath),
           resolveDir: sourceDir,
           externals,
+          additionalBundleModules: options.bundleModules,
           loaders: options.loaders,
           contentTypes: options.contentTypes,
           ...(options.definitionExport === undefined
@@ -85,6 +87,7 @@ export async function runComponentOnceCli(args: readonly string[]): Promise<void
           resolveDir: sourceDir,
           renderer: options.renderer,
           externals,
+          bundleModules: options.bundleModules,
           loaders: options.loaders,
           contentTypes: options.contentTypes,
           ...(options.definitionExport === undefined
@@ -118,6 +121,7 @@ function parseBuildArgs(args: readonly string[]): CliBuildOptions {
   let out: string | undefined;
   let definitionExport: string | undefined;
   const externalModules: string[] = [];
+  const bundleModules: string[] = [];
   const loaders: Record<string, ComponentOnceAdditionalLoader> = {};
   const contentTypes: Record<string, string> = {};
 
@@ -139,6 +143,10 @@ function parseBuildArgs(args: readonly string[]): CliBuildOptions {
       }
       case "--external": {
         externalModules.push(requireOptionValue(args, ++index, "--external"));
+        break;
+      }
+      case "--bundle": {
+        bundleModules.push(requireOptionValue(args, ++index, "--bundle"));
         break;
       }
       case "--loader": {
@@ -171,6 +179,7 @@ function parseBuildArgs(args: readonly string[]): CliBuildOptions {
     out: out ?? defaultOutputPath(entry),
     ...(definitionExport === undefined ? {} : { definitionExport }),
     externalModules,
+    bundleModules,
     loaders,
     contentTypes,
   };
@@ -273,6 +282,7 @@ function usage(): string {
     "  -o, --out <file>   Output JSON package (default: <entry>.componentonce.json)",
     "  --export <name>    Definition export name (default: definition)",
     "  --external <name>  Host module to keep external and load for trusted build-time discovery",
+    "  --bundle <name>    Bare implementation package to compile into the JSON artifact",
     "  --loader <ext=kind> Additional esbuild loader, for example .bin=file or .svg=dataurl",
     "  --content-type <ext=type>  Media type override for an emitted file-loader asset",
     "  -h, --help         Show this help",
@@ -280,6 +290,7 @@ function usage(): string {
     "React builds automatically externalize react, JSX runtimes, and @componentonce/react.",
     "DOM builds automatically externalize @componentonce/dom.",
     "Relative imports are bundled from the entry file directory.",
+    "Bare package imports must be explicitly --bundle or --external.",
     "",
   ].join("\n");
 }

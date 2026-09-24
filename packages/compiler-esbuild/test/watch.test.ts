@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { expect, it } from "vitest";
@@ -47,10 +47,66 @@ it("watches imports, CSS Modules and assets; recovers syntax and missing imports
     await writeFile(entry, 'import fs from "node:fs"; export {fs};');
     await until(() => results.length > count && results.at(-1)?.ok === false);
     const error = results.at(-1);
-    expect(error && !error.ok && error.diagnostics[0]?.text).toContain("not an allowed host external");
+    expect(error && !error.ok && error.diagnostics[0]?.text).toContain("neither a bundled implementation module nor an allowed host external");
     await writeFile(entry, source);
     await watcher.rebuild();
     expect(results.at(-1)?.ok).toBe(true);
     expect(await readFile(entry, "utf8")).toBe(source);
   } finally { await watcher.dispose(); await watcher.dispose(); await rm(dir, { recursive: true, force: true }); }
 }, 30000);
+
+
+it("watches an explicitly bundled bare implementation package", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "componentonce-watch-bundle-"));
+  const entry = join(dir, "entry.ts");
+  const packageDir = join(dir, "node_modules", "fixture-watch-bundle");
+  await mkdir(packageDir, { recursive: true });
+  await writeFile(
+    join(packageDir, "package.json"),
+    JSON.stringify({
+      name: "fixture-watch-bundle",
+      version: "1.0.0",
+      type: "module",
+      exports: "./index.js",
+    }),
+  );
+  await writeFile(join(packageDir, "index.js"), 'export const label = "first";\n');
+  await writeFile(
+    entry,
+    'import { label } from "fixture-watch-bundle"; export { label };',
+  );
+  const results: ComponentOnceWatchResult[] = [];
+  const watcher = await watchTrustedModuleFile({
+    entry,
+    bundleModules: ["fixture-watch-bundle"],
+    onBuild(result) {
+      results.push(result);
+    },
+  });
+  try {
+    await until(() => results.some((result) => result.ok));
+    const first = results.find(
+      (result): result is Extract<ComponentOnceWatchResult, { ok: true }> =>
+        result.ok,
+    );
+    expect(first?.artifact.externalModules).toEqual([]);
+    expect(first?.artifact.code).toContain("first");
+
+    const count = results.length;
+    await writeFile(
+      join(packageDir, "index.js"),
+      'export const label = "second";\n',
+    );
+    await until(
+      () =>
+        results.length > count &&
+        results.at(-1)?.ok === true &&
+        (
+          results.at(-1) as Extract<ComponentOnceWatchResult, { ok: true }>
+        ).artifact.code.includes("second"),
+    );
+  } finally {
+    await watcher.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20000);

@@ -26,7 +26,8 @@ Useful options:
 --renderer <id>    Renderer id recorded in the package
 -o, --out <file>   Output JSON package
 --export <name>    Definition export name (default: definition)
---external <name>  Additional host module kept external and loaded for trusted build discovery
+--external <name>  Host-owned module kept outside the JSON artifact
+--bundle <name>    Bare implementation package compiled into the JSON artifact
 --loader <ext=kind> Additional esbuild loader, for example .bin=file or .svg=dataurl
 --content-type <ext=type> Media type override for an emitted file-loader asset
 ```
@@ -166,3 +167,24 @@ Artifacts contain deterministic bundle text, byte length, SHA-256 hash/integrity
 `instantiateTrustedBundle` deliberately uses `new Function` with a narrow injected require map. It is for trusted internal code and is not a security sandbox.
 
 esbuild transpiles TypeScript syntax but does not perform semantic type checking; hosts that need that guarantee should run their TypeScript checker separately.
+
+
+## Bundle vs external package imports
+
+Bare package imports have an explicit ownership boundary.
+
+    componentonce build ./src/card.tsx       --external @my-app/host-sdk       --bundle @my-team/card-formatters
+
+External means the host owns that module and must inject it while loading the
+component. Bundle means it is an implementation dependency: esbuild follows the
+package and its subpath imports and stores that code in the ComponentOnce JSON.
+A bundled package does not appear in bundle.externalModules, so the host does
+not need to install or know about it.
+
+React, the React JSX runtimes, and the ComponentOnce React adapter remain
+host-owned automatically. Unknown bare package imports still fail. This keeps
+host singletons deliberate without turning reusable implementation libraries
+into host ABI.
+
+Programmatic callers use bundleModules with compileTrustedModule and
+additionalBundleModules with compileTrustedReactModule/buildTrustedReactPackage.

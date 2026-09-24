@@ -82,3 +82,55 @@ it("runs the built CLI when invoked through a symlink", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+
+it("bundles a bare implementation package with --bundle instead of recording a host external", async () => {
+  const root = await mkdtemp(join(tmpdir(), "componentonce-cli-bundle-"));
+  try {
+    const packageDirectory = join(root, "node_modules", "fixture-cli-bundle");
+    await mkdir(packageDirectory, { recursive: true });
+    await writeFile(
+      join(packageDirectory, "package.json"),
+      JSON.stringify({
+        name: "fixture-cli-bundle",
+        version: "1.0.0",
+        type: "module",
+        exports: "./index.js",
+      }),
+    );
+    await writeFile(
+      join(packageDirectory, "index.js"),
+      'export const id = "consumer.bundled";\n',
+    );
+    const entry = join(root, "entry.ts");
+    const out = join(root, "component.componentonce.json");
+    await writeFile(
+      entry,
+      [
+        'import { id } from "fixture-cli-bundle";',
+        "export const definition = {",
+        '  manifest: { id, version: "1.0.0" },',
+        "  implementation: () => null,",
+        "};",
+      ].join("\n"),
+    );
+
+    await runComponentOnceCli([
+      "build",
+      entry,
+      "--renderer",
+      "test",
+      "--bundle",
+      "fixture-cli-bundle",
+      "--out",
+      out,
+    ]);
+    const componentPackage = parseTrustedComponentPackage(await readFile(out));
+    expect(componentPackage.manifest.id).toBe("consumer.bundled");
+    expect(componentPackage.bundle.externalModules).not.toContain(
+      "fixture-cli-bundle",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

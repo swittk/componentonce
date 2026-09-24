@@ -215,6 +215,9 @@ export async function buildTrustedDefinitionPackage(
       ...(input.externalModules ?? []),
       ...Object.keys(externals),
     ]),
+    ...(input.bundleModules === undefined
+      ? {}
+      : { bundleModules: input.bundleModules }),
     ...(input.jsx === undefined ? {} : { jsx: input.jsx }),
   });
   return packageTrustedDefinitionArtifact(
@@ -249,6 +252,9 @@ export async function buildTrustedReactPackage(
       ...(input.additionalExternalModules ?? []),
       ...additionalExternals,
     ]),
+    ...(input.additionalBundleModules === undefined
+      ? {}
+      : { additionalBundleModules: input.additionalBundleModules }),
   });
   return packageTrustedDefinitionArtifact(
     artifact,

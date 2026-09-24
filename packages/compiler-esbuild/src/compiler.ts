@@ -96,6 +96,11 @@ export interface ComponentOnceCompileInput {
   readonly resolveDir?: string;
   /** Exact import specifiers the host will inject during instantiation. */
   readonly externalModules?: readonly string[];
+  /**
+   * Bare package specifiers that are implementation dependencies and must be
+   * followed into this bundle instead of becoming host ABI.
+   */
+  readonly bundleModules?: readonly string[];
   /** JSX transform mode; generic compilation defaults to transform. */
   readonly jsx?: ComponentOnceJsxMode;
   /** Additional extension-to-loader rules; common web images and fonts default to `file`. */
@@ -113,6 +118,8 @@ export interface ComponentOnceReactCompileInput {
   readonly resolveDir?: string;
   /** Additional non-React host externals. */
   readonly additionalExternalModules?: readonly string[];
+  /** Bare implementation packages to follow into the generated bundle. */
+  readonly additionalBundleModules?: readonly string[];
   /** Additional extension-to-loader rules; common web images and fonts default to `file`. */
   readonly loaders?: Readonly<Record<string, ComponentOnceAdditionalLoader>>;
   /** Optional extension-to-content-type overrides for emitted file-loader assets. */
@@ -263,6 +270,10 @@ export async function compileTrustedModule(
   );
   const loader = input.loader ?? inferLoader(sourceFileName);
   const allowedExternals = normalizeAllowedExternals(input.externalModules ?? []);
+  const bundledModules = normalizeBundledModules(
+    input.bundleModules ?? [],
+    allowedExternals,
+  );
   const workingDirectory = resolve(input.resolveDir ?? process.cwd());
   const outputDirectory = resolve(workingDirectory, OUTPUT_DIRECTORY_NAME);
   const loaders = normalizeLoaders(input.loaders);
@@ -277,6 +288,7 @@ export async function compileTrustedModule(
       jsx: input.jsx ?? "transform",
       loaders,
       allowedExternals,
+      bundledModules,
       outputDirectory,
     });
     const result = await build({
@@ -296,7 +308,7 @@ export async function compileTrustedModule(
       platform: "neutral",
       plugins: [
         createCssModuleNamespacePlugin(compilationNamespace, workingDirectory),
-        createHostExternalPlugin(allowedExternals),
+        createHostExternalPlugin(allowedExternals, bundledModules),
       ],
       publicPath: COMPONENTONCE_ASSET_URL_PREFIX,
       sourcemap: "inline",
@@ -371,6 +383,9 @@ export function compileTrustedReactModule(
       ...REACT_EXTERNALS,
       ...(input.additionalExternalModules ?? []),
     ],
+    ...(input.additionalBundleModules === undefined
+      ? {}
+      : { bundleModules: input.additionalBundleModules }),
     jsx: "automatic",
   });
 }
@@ -615,6 +630,7 @@ interface CompilationNamespaceInput {
   readonly jsx: ComponentOnceJsxMode;
   readonly loaders: Readonly<Record<string, ComponentOnceAdditionalLoader>>;
   readonly allowedExternals: ReadonlySet<string>;
+  readonly bundledModules: ReadonlySet<string>;
   readonly outputDirectory: string;
 }
 
@@ -636,7 +652,12 @@ async function calculateCompilationNamespace(
     minify: false,
     outdir: input.outputDirectory,
     platform: "neutral",
-    plugins: [createHostExternalPlugin(input.allowedExternals)],
+    plugins: [
+      createHostExternalPlugin(
+        input.allowedExternals,
+        input.bundledModules,
+      ),
+    ],
     publicPath: COMPONENTONCE_ASSET_URL_PREFIX,
     stdin: {
       contents: input.source,
@@ -754,7 +775,10 @@ function createCssModuleNamespacePlugin(
   };
 }
 
-function createHostExternalPlugin(allowedExternals: ReadonlySet<string>): Plugin {
+function createHostExternalPlugin(
+  allowedExternals: ReadonlySet<string>,
+  bundledModules: ReadonlySet<string>,
+): Plugin {
   return {
     name: "componentonce-host-externals",
     setup(buildApi) {
@@ -766,21 +790,38 @@ function createHostExternalPlugin(allowedExternals: ReadonlySet<string>): Plugin
         if (allowedExternals.has(args.path)) {
           return { external: true, path: args.path };
         }
-        if (args.path.startsWith(".")) {
+        if (
+          args.path.startsWith(".") ||
+          matchesBundledModule(args.path, bundledModules)
+        ) {
           return undefined;
         }
         return {
           errors: [
             {
               text:
-                `Import "${args.path}" is not an allowed host external. ` +
-                "Add its exact specifier to externalModules (or additionalExternalModules for the React helper).",
+                "Import " +
+                JSON.stringify(args.path) +
+                " is neither a bundled implementation module nor an allowed host external. " +
+                "Add its package specifier to bundleModules, or to externalModules when the host owns it.",
             },
           ],
         };
       });
     },
   };
+}
+
+function matchesBundledModule(
+  specifier: string,
+  bundledModules: ReadonlySet<string>,
+): boolean {
+  for (const bundled of bundledModules) {
+    if (specifier === bundled || specifier.startsWith(bundled + "/")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function isCssReferenceKind(kind: string): boolean {
@@ -848,6 +889,47 @@ function normalizeAllowedExternals(additionalExternals: readonly string[]): Read
     externals.add(specifier);
   }
   return externals;
+}
+
+
+function normalizeBundledModules(
+  bundledModules: readonly string[],
+  allowedExternals: ReadonlySet<string>,
+): ReadonlySet<string> {
+  const bundled = new Set<string>();
+  for (const specifier of bundledModules) {
+    if (
+      specifier.length === 0 ||
+      specifier !== specifier.trim() ||
+      specifier.startsWith(".") ||
+      specifier.startsWith("/") ||
+      specifier.includes("\0") ||
+      specifier.includes("\n") ||
+      specifier.includes("\r")
+    ) {
+      throw new ComponentOnceCompileError([
+        createInternalDiagnostic(
+          "Invalid bundled module specifier: " + JSON.stringify(specifier) + ".",
+        ),
+      ]);
+    }
+    if (
+      allowedExternals.has(specifier) ||
+      [...allowedExternals].some((external) =>
+        external.startsWith(specifier + "/"),
+      )
+    ) {
+      throw new ComponentOnceCompileError([
+        createInternalDiagnostic(
+          "Module " +
+            JSON.stringify(specifier) +
+            " cannot be both bundled and external.",
+        ),
+      ]);
+    }
+    bundled.add(specifier);
+  }
+  return bundled;
 }
 
 function inferLoader(sourceFileName: string): ComponentOnceSourceLoader {
@@ -1014,7 +1096,14 @@ export async function watchTrustedModuleFile(input: ComponentOnceWatchInput): Pr
   const entry = resolve(input.entry);
   const workingDirectory = dirname(entry);
   const externals = normalizeAllowedExternals(input.externalModules ?? []);
-  const externalPlugin = createHostExternalPlugin(externals);
+  const bundledModules = normalizeBundledModules(
+    input.bundleModules ?? [],
+    externals,
+  );
+  const externalPlugin = createHostExternalPlugin(
+    externals,
+    bundledModules,
+  );
   const graph = await createBuildContext({
     absWorkingDir: workingDirectory,
     // A virtual importer lets the strict external plugin handle the entry as a relative import.
@@ -1046,6 +1135,7 @@ export async function watchTrustedModuleFile(input: ComponentOnceWatchInput): Pr
               ...(input.loader === undefined ? {} : { loader: input.loader }),
               ...(input.jsx === undefined ? {} : { jsx: input.jsx }),
               ...(input.externalModules === undefined ? {} : { externalModules: input.externalModules }),
+              ...(input.bundleModules === undefined ? {} : { bundleModules: input.bundleModules }),
               ...(input.loaders === undefined ? {} : { loaders: input.loaders }),
               ...(input.contentTypes === undefined ? {} : { contentTypes: input.contentTypes }),
             });

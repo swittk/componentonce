@@ -20,6 +20,8 @@ export interface ComponentOnceDevServerOptions {
   readonly cwd?: string;
   /** Additional exact imports allowed by the production compiler; values come from the profile. */
   readonly externalModules?: readonly string[];
+  /** Bare implementation packages to compile into the artifact instead of host-injecting. */
+  readonly bundleModules?: readonly string[];
   readonly definitionExport?: string;
 }
 
@@ -239,7 +241,12 @@ export async function createComponentOnceDevServer(options: ComponentOnceDevServ
     try { await harness.rebuild(); } catch { /* onEnd reports errors; keep watching for a fix. */ }
     await harness.watch();
     watcher = await watchTrustedModuleFile({
-      entry, jsx: "automatic", externalModules: sourceExternals,
+      entry,
+      jsx: "automatic",
+      externalModules: sourceExternals,
+      ...(options.bundleModules === undefined
+        ? {}
+        : { bundleModules: options.bundleModules }),
       onBuild(result) {
         if (result.ok) {
           revision += 1;
