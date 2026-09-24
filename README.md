@@ -103,6 +103,8 @@ Optional local React development workbench. `componentonce dev` watches the full
 
 A manifest can require multiple named capabilities, for example React plus an application SDK. Exact name/version equality is the default. Hosts can supply another compatibility predicate when they intentionally support ranges or other version policies.
 
+For capabilities that use stable numeric SemVer, `@componentonce/core` includes the opt-in `semverComponentOnceCapabilityCompatibility` helper. For example a requirement of `>=18 <20` can be checked against a host React version of `18.2.0` or `19.2.6`. This affects only capability matching; component package identity and registry resolution stay exact.
+
 Sharing the host React singleton prevents duplicate-React hook failures. Capability checks separately prevent a component authored against an incompatible React/API version from rendering accidentally.
 
 ## Trust model

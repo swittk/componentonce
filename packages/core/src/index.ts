@@ -372,3 +372,8 @@ function assertValidReference(reference: ComponentOnceExactReference): void {
     throw new ComponentOnceInvalidReferenceError(reference);
   }
 }
+
+export {
+  satisfiesComponentOnceCapabilitySemverRange,
+  semverComponentOnceCapabilityCompatibility,
+} from "./semver.js";
