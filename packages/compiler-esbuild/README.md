@@ -152,7 +152,7 @@ The v2 package has sorted `assets` entries with safe relative `path`, `contentTy
 
 Plain `.css` is global CSS. It is not automatically isolated. Prefer `.module.css` for scoped class names; ComponentOnce adds a deterministic namespace derived from the portable input/dependency graph, so changing a referenced image, font, or imported style also changes local class names while identical static dependency graphs retain those class names across directories. A host may instead mount styles in a `ShadowRoot`, but Shadow DOM is never forced.
 
-Build output is independent of the process working directory. Absolute `sourceFileName` values are reduced to their basename, and build-machine paths are not persisted in bundle comments, source maps, or metafile data.
+With an explicit `resolveDir`, resolution is independent of the process working directory. Absolute `sourceFileName` values are reduced to their basename. Native dependency paths can remain in bundle comments, source maps, and metafile data; see the package-bundling portability notes below.
 
 ## Low-level compilation
 
@@ -204,9 +204,9 @@ settings, and layout remain deterministic; integrity hashes identify emitted
 bytes, not an installation-independent build cache key. Package resolution follows
 real package locations, including unhoisted transitive dependencies.
 
-For CSS Modules, glob JavaScript entries that import their CSS; direct CSS globs
-bypass content-based class isolation. Original sources stay
-available in inline source maps.
+Direct glob imports of CSS Modules use the same content-based isolation and
+style exports as static imports. Original sources stay available in inline
+source maps.
 
 Trusted artifacts replace `process.env.NODE_ENV` with `"production"` at compile
 time, regardless of the build machine's environment. This does not inject other

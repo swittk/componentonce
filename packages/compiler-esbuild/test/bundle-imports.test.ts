@@ -633,6 +633,59 @@ it("shares CSS imports across glob modules and includes glob-only content in CSS
   });
 });
 
+it.each([".module.css", ".skin.css"])("isolates direct CSS globs and shares static exports for %s", async (extension) => {
+  await withPackageFixture(async (root) => {
+    const helper = join(root, "node_modules", "@fixture", "helper");
+    await mkdir(join(helper, "styles"));
+    await writeFile(join(helper, "styles", "base.module.css"), ".base { display: block; }");
+    await writeFile(join(helper, "styles", "image.svg"), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+    await writeFile(join(helper, "index.js"), [
+      'import styles from "./styles/card' + extension + '";',
+      'export { styles };',
+      'export const load = (name) => import("./styles/" + name + "' + extension + '");',
+      'export const requireStyle = (name) => require("./styles/" + name + "' + extension + '");',
+    ].join("\n"));
+    const compile = async (color: string) => {
+      await writeFile(join(helper, "styles", "card" + extension),
+        '.root { composes: base from "./base.module.css"; color: ' + color + '; background: url("./image.svg"); }');
+      // Only reachable through the glob, so isolation must not rely on a static import.
+      await writeFile(join(helper, "styles", "other" + extension), ".root { color: " + color + "; }");
+      const artifact = await compileTrustedModule({
+        source: 'export { styles, load, requireStyle } from "@fixture/helper";',
+        sourceFileName: "entry.ts", resolveDir: root, bundleModules: ["@fixture/helper"],
+        loaders: { [extension]: "local-css" },
+      });
+      type Styles = { root: string };
+      const loaded = instantiateTrustedBundle<{
+        styles: Styles;
+        load(name: string): Promise<{ default: Styles; root: string }>;
+        requireStyle(name: string): Styles;
+      }>(artifact, { externals: {} });
+      const card = await loaded.load("card");
+      expect(card.default).toBe(loaded.styles);
+      expect(card.root).toBe(loaded.styles.root);
+      expect(loaded.requireStyle("card")).toBe(loaded.styles);
+      const other = await loaded.load("other");
+      expect(other.default).toBe(loaded.requireStyle("other"));
+      expect(other.root).toBe(other.default.root);
+      expect(other.root).not.toBe(card.root);
+      const css = Buffer.from(artifact.assets.find((asset) => asset.path === "component.css")!.content, "base64").toString("utf8");
+      for (const className of [...card.root.split(" "), other.root]) {
+        expect(css).toContain("." + className);
+      }
+      expect(css).toContain("display: block");
+      expect(css).toContain("color: " + color);
+      expect(css).toContain("componentonce-asset:/");
+      expect(artifact.assets.some((asset) => asset.path.endsWith(".svg"))).toBe(true);
+      return { card: card.root, other: other.root };
+    };
+    const first = await compile("red");
+    const second = await compile("blue");
+    expect(first.card).not.toBe(second.card);
+    expect(first.other).not.toBe(second.other);
+  });
+});
+
 it("names the React import-ownership options in undeclared import diagnostics", async () => {
   await expect(compileTrustedReactModule({
     source: 'export { value } from "not-selected";',

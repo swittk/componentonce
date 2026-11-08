@@ -861,6 +861,24 @@ function createCssModuleNamespacePlugin(
         }
         return undefined;
       });
+      // Native glob matches skip onResolve. A CommonJS facade retains CSS export
+      // semantics and shares the namespaced module used by static imports.
+      const localCssExtensions = extensions.filter((extension) => effectiveLoaders[extension] === "local-css");
+      if (localCssExtensions.length > 0) {
+        const filter = new RegExp(
+          "(" + localCssExtensions.map((extension) => extension.replace(/[.*+?^{}()|[\]\\$]/gu, "\\$&")).join("|") + ")$",
+          "i",
+        );
+        buildApi.onLoad({ filter, namespace: "file" }, (args) => {
+          if (!isLocalCssFile(args.path)) return undefined;
+          const specifier = JSON.stringify("./" + basename(args.path));
+          return {
+            contents: "module.exports = require(" + specifier + ");",
+            loader: "js",
+            resolveDir: dirname(args.path),
+          };
+        });
+      }
       buildApi.onLoad({ filter: /.*/, namespace }, async (args) => {
         const pluginData = args.pluginData as { readonly realPath?: unknown } | undefined;
         if (typeof pluginData?.realPath !== "string") {
