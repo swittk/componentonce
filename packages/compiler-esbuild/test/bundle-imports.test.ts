@@ -372,3 +372,36 @@ it("preserves linked package tsconfig JSX and class-field transforms", async () 
     expect(sourceMap.sourcesContent.some((source) => source.includes('<strong label="custom factory" />'))).toBe(true);
   });
 });
+
+
+it.each(["entry", "bundled package"])("preserves conditional exports for dynamic imports from %s", async (importer) => {
+  await withPackageFixture(async (root) => {
+    const conditional = join(root, "node_modules", "@fixture", "conditional");
+    await mkdir(conditional, { recursive: true });
+    await writeFile(join(conditional, "package.json"), JSON.stringify({
+      name: "@fixture/conditional", version: "1.0.0", type: "module",
+      exports: { import: "./import.js", require: "./require.cjs" },
+    }));
+    await writeFile(join(conditional, "import.js"), 'export const value = "import branch";');
+    await writeFile(join(conditional, "require.cjs"), 'exports.value = "require branch";');
+    const source = `
+      export const load = () => import("@fixture/conditional");
+      export const loadRequired = () => require("@fixture/conditional");
+    `;
+    if (importer === "bundled package") {
+      await writeFile(join(root, "node_modules", "@fixture", "helper", "index.js"), source);
+    }
+    const artifact = await compileTrustedModule({
+      source: importer === "entry" ? source : 'export { load, loadRequired } from "@fixture/helper";',
+      sourceFileName: "entry.ts", resolveDir: root,
+      bundleModules: ["@fixture/helper", "@fixture/conditional"],
+    });
+    const loaded = instantiateTrustedBundle<{
+      load(): Promise<{ value: string }>;
+      loadRequired(): { value: string };
+    }>(artifact, { externals: {} });
+    expect(artifact.externalModules).toEqual([]);
+    expect((await loaded.load()).value).toBe("import branch");
+    expect(loaded.loadRequired().value).toBe("require branch");
+  });
+});

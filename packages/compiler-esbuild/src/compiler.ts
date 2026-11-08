@@ -800,6 +800,8 @@ function createPortableDependencyPlugin(
         // file loading retains per-file tsconfig settings, including extends.
         const transformed = await build({
           ...TRUSTED_BUILD_OPTIONS,
+          // Resolve import conditions before the final bundle lowers dynamic imports.
+          supported: { "dynamic-import": true },
           absWorkingDir: workingDirectory,
           entryPoints: sourceEntries.map(([path, dependency]) => ({ in: path, out: dependency.modulePath })),
           bundle: false,
