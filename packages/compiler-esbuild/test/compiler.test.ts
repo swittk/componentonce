@@ -77,6 +77,43 @@ const counterSource = `
 `;
 
 describe("compileTrustedReactModule", () => {
+  it("allows minification and source-map removal without changing existing defaults", async () => {
+    const source = "const originalIdentifier = 21; export const answer = originalIdentifier * 2;";
+    const original = await compileTrustedModule({ source, sourceFileName: "build-options.ts" });
+    const optimized = await compileTrustedModule({
+      source,
+      sourceFileName: "build-options.ts",
+      minify: true,
+      sourceMap: "none",
+    });
+    expect(original.code).toContain("sourceMappingURL=data:application/json;base64,");
+    const base64 = original.code.split("sourceMappingURL=data:application/json;base64,")[1]?.split("\n")[0];
+    expect(base64).toBeDefined();
+    const decodedMap = JSON.parse(Buffer.from(base64!, "base64").toString("utf8")) as {
+      readonly sourcesContent: readonly string[];
+    };
+    expect(decodedMap.sourcesContent).toContain(source);
+    expect(optimized.code).not.toContain("sourceMappingURL=");
+    expect(optimized.code.length).toBeLessThan(original.code.length);
+    expect(optimized.sha256).not.toBe(original.sha256);
+    expect(instantiateTrustedBundle<{ answer: number }>(optimized, { externals: {} }).answer).toBe(42);
+  });
+
+  it("passes output options through the React package builder", async () => {
+    const result = await buildTrustedReactPackage({
+      source: counterSource,
+      sourceFileName: "optimized-counter.tsx",
+      externals: { react: React, "react/jsx-runtime": jsxRuntime },
+      minify: true,
+      sourceMap: "none",
+    });
+    expect(result.bundle.code).not.toContain("sourceMappingURL=");
+    const instance = instantiateTrustedComponentPackage<CounterDefinition>(result, {
+      externals: { react: React, "react/jsx-runtime": jsxRuntime },
+    });
+    expect(instance.manifest.id).toBe("example.counter");
+  });
+
   it("compiles TSX to an immutable deterministic artifact", async () => {
     const first = await compileTrustedReactModule({
       source: counterSource,

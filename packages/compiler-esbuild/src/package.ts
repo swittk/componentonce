@@ -211,6 +211,8 @@ export async function buildTrustedDefinitionPackage(
     ...(input.resolveDir === undefined ? {} : { resolveDir: input.resolveDir }),
     ...(input.loaders === undefined ? {} : { loaders: input.loaders }),
     ...(input.contentTypes === undefined ? {} : { contentTypes: input.contentTypes }),
+    ...(input.minify === undefined ? {} : { minify: input.minify }),
+    ...(input.sourceMap === undefined ? {} : { sourceMap: input.sourceMap }),
     externalModules: uniqueStrings([
       ...(input.externalModules ?? []),
       ...Object.keys(externals),
@@ -245,6 +247,8 @@ export async function buildTrustedReactPackage(
     ...(input.resolveDir === undefined ? {} : { resolveDir: input.resolveDir }),
     ...(input.loaders === undefined ? {} : { loaders: input.loaders }),
     ...(input.contentTypes === undefined ? {} : { contentTypes: input.contentTypes }),
+    ...(input.minify === undefined ? {} : { minify: input.minify }),
+    ...(input.sourceMap === undefined ? {} : { sourceMap: input.sourceMap }),
     additionalExternalModules: uniqueStrings([
       ...(input.additionalExternalModules ?? []),
       ...additionalExternals,

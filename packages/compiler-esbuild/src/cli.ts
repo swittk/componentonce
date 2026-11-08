@@ -20,6 +20,8 @@ interface CliBuildOptions {
   readonly externalModules: readonly string[];
   readonly loaders: Readonly<Record<string, ComponentOnceAdditionalLoader>>;
   readonly contentTypes: Readonly<Record<string, string>>;
+  readonly minify: boolean;
+  readonly sourceMap: "inline" | "none";
 }
 
 const REACT_HOST_EXTERNALS = [
@@ -75,6 +77,8 @@ export async function runComponentOnceCli(args: readonly string[]): Promise<void
           externals,
           loaders: options.loaders,
           contentTypes: options.contentTypes,
+          minify: options.minify,
+          sourceMap: options.sourceMap,
           ...(options.definitionExport === undefined
             ? {}
             : { definitionExport: options.definitionExport }),
@@ -87,6 +91,8 @@ export async function runComponentOnceCli(args: readonly string[]): Promise<void
           externals,
           loaders: options.loaders,
           contentTypes: options.contentTypes,
+          minify: options.minify,
+          sourceMap: options.sourceMap,
           ...(options.definitionExport === undefined
             ? {}
             : { definitionExport: options.definitionExport }),
@@ -117,6 +123,8 @@ function parseBuildArgs(args: readonly string[]): CliBuildOptions {
   let renderer = "react";
   let out: string | undefined;
   let definitionExport: string | undefined;
+  let minify = false;
+  let sourceMap: "inline" | "none" = "inline";
   const externalModules: string[] = [];
   const loaders: Record<string, ComponentOnceAdditionalLoader> = {};
   const contentTypes: Record<string, string> = {};
@@ -137,6 +145,18 @@ function parseBuildArgs(args: readonly string[]): CliBuildOptions {
         definitionExport = requireOptionValue(args, ++index, "--export");
         break;
       }
+      case "--minify":
+        minify = true;
+        break;
+      case "--no-minify":
+        minify = false;
+        break;
+      case "--sourcemap":
+        sourceMap = "inline";
+        break;
+      case "--no-sourcemap":
+        sourceMap = "none";
+        break;
       case "--external": {
         externalModules.push(requireOptionValue(args, ++index, "--external"));
         break;
@@ -173,6 +193,8 @@ function parseBuildArgs(args: readonly string[]): CliBuildOptions {
     externalModules,
     loaders,
     contentTypes,
+    minify,
+    sourceMap,
   };
 }
 
@@ -275,6 +297,8 @@ function usage(): string {
     "  --external <name>  Host module to keep external and load for trusted build-time discovery",
     "  --loader <ext=kind> Additional esbuild loader, for example .bin=file or .svg=dataurl",
     "  --content-type <ext=type>  Media type override for an emitted file-loader asset",
+    "  --minify / --no-minify       Enable/disable executable minification (default: off)",
+    "  --sourcemap / --no-sourcemap Embed/omit inline source map (default: inline)",
     "  -h, --help         Show this help",
     "",
     "React builds automatically externalize react, JSX runtimes, and @componentonce/react.",

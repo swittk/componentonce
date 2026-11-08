@@ -102,6 +102,10 @@ export interface ComponentOnceCompileInput {
   readonly loaders?: Readonly<Record<string, ComponentOnceAdditionalLoader>>;
   /** Optional extension-to-content-type overrides for emitted file-loader assets. */
   readonly contentTypes?: Readonly<Record<string, string>>;
+  /** Minify the executable. Defaults to false to preserve current artifacts. */
+  readonly minify?: boolean;
+  /** Embed the original source as an inline source map, or omit it. Defaults to inline. */
+  readonly sourceMap?: "inline" | "none";
 }
 
 /** React convenience compiler input; React externals are supplied by the wrapper. */
@@ -117,6 +121,10 @@ export interface ComponentOnceReactCompileInput {
   readonly loaders?: Readonly<Record<string, ComponentOnceAdditionalLoader>>;
   /** Optional extension-to-content-type overrides for emitted file-loader assets. */
   readonly contentTypes?: Readonly<Record<string, string>>;
+  /** Minify the executable. Defaults to false to preserve current artifacts. */
+  readonly minify?: boolean;
+  /** Embed the original source as an inline source map, or omit it. Defaults to inline. */
+  readonly sourceMap?: "inline" | "none";
 }
 
 /** Source location attached to a normalized compiler diagnostic. */
@@ -291,7 +299,7 @@ export async function compileTrustedModule(
       loader: loaders as Record<string, Loader>,
       logLevel: "silent",
       metafile: true,
-      minify: false,
+      minify: input.minify ?? false,
       outdir: outputDirectory,
       platform: "neutral",
       plugins: [
@@ -299,8 +307,8 @@ export async function compileTrustedModule(
         createHostExternalPlugin(allowedExternals),
       ],
       publicPath: COMPONENTONCE_ASSET_URL_PREFIX,
-      sourcemap: "inline",
-      sourcesContent: true,
+      sourcemap: input.sourceMap === "none" ? false : "inline",
+      sourcesContent: input.sourceMap !== "none",
       stdin: {
         contents: input.source,
         loader: loader as Loader,
@@ -367,6 +375,8 @@ export function compileTrustedReactModule(
     ...(input.resolveDir === undefined ? {} : { resolveDir: input.resolveDir }),
     ...(input.loaders === undefined ? {} : { loaders: input.loaders }),
     ...(input.contentTypes === undefined ? {} : { contentTypes: input.contentTypes }),
+    ...(input.minify === undefined ? {} : { minify: input.minify }),
+    ...(input.sourceMap === undefined ? {} : { sourceMap: input.sourceMap }),
     externalModules: [
       ...REACT_EXTERNALS,
       ...(input.additionalExternalModules ?? []),
@@ -1048,6 +1058,8 @@ export async function watchTrustedModuleFile(input: ComponentOnceWatchInput): Pr
               ...(input.externalModules === undefined ? {} : { externalModules: input.externalModules }),
               ...(input.loaders === undefined ? {} : { loaders: input.loaders }),
               ...(input.contentTypes === undefined ? {} : { contentTypes: input.contentTypes }),
+              ...(input.minify === undefined ? {} : { minify: input.minify }),
+              ...(input.sourceMap === undefined ? {} : { sourceMap: input.sourceMap }),
             });
             outcome = { ok: true, artifact, durationMs: performance.now() - started };
           } catch (error) {
