@@ -29,7 +29,20 @@ Useful options:
 --external <name>  Additional host module kept external and loaded for trusted build discovery
 --loader <ext=kind> Additional esbuild loader, for example .bin=file or .svg=dataurl
 --content-type <ext=type> Media type override for an emitted file-loader asset
+--minify / --no-minify        Enable or disable executable minification
+--sourcemap / --no-sourcemap  Embed or omit inline source maps
 ```
+
+For a compact production package without embedded original source, opt in explicitly:
+
+```sh
+componentonce build ./src/amount-card.tsx --minify --no-sourcemap
+```
+
+Existing defaults remain unminified with inline source maps for compatibility with
+current build and dev workflows. Inline maps include original source text from
+the component and its bundled local modules. Minification reduces size; it does
+not protect secrets or make client-side logic private.
 
 React builds automatically externalize `react`, the JSX runtimes, and `@componentonce/react`. DOM builds automatically externalize `@componentonce/dom`. Relative imports are bundled from the entry file directory; undeclared package imports still fail rather than being silently pulled from the compiler process.
 
@@ -99,6 +112,8 @@ const componentPackage = await buildTrustedReactPackage({
   },
   loaders: { ".mesh": "file" },
   contentTypes: { ".mesh": "application/vnd.example.mesh" },
+  minify: true,
+  sourceMap: "none",
 });
 
 await store.put(
@@ -155,7 +170,7 @@ Build output is independent of the process working directory. Absolute `sourceFi
 
 ## Low-level compilation
 
-`compileTrustedModule` compiles JavaScript/TypeScript into an immutable CommonJS artifact. Caller-declared package imports remain external. Relative imports can be bundled when `resolveDir` is supplied.
+`compileTrustedModule` compiles JavaScript/TypeScript into an immutable CommonJS artifact. Caller-declared package imports remain external. Relative imports can be bundled when `resolveDir` is supplied. The typed APIs `compileTrustedModule`, `compileTrustedReactModule`, `buildTrustedDefinitionPackage`, `buildTrustedReactPackage`, and `watchTrustedModuleFile` accept optional `minify: boolean` and `sourceMap: "inline" | "none"` settings. Omitting them preserves the previous unminified/inline-map output. The dev workbench uses these defaults.
 
 `compileTrustedReactModule` adds automatic JSX transformation and React/JSX host externals while still never bundling React.
 

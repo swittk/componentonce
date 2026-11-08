@@ -82,3 +82,35 @@ it("runs the built CLI when invoked through a symlink", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it("build CLI flags control minification and source maps", async () => {
+  const root = await mkdtemp(join(tmpdir(), "componentonce-cli-output-"));
+  try {
+    const entry = join(root, "entry.ts");
+    const regularPath = join(root, "regular.componentonce.json");
+    const optimizedPath = join(root, "optimized.componentonce.json");
+    const explicitPath = join(root, "explicit.componentonce.json");
+    const source = [
+      "const preservedSourceIdentifier = 42;",
+      "export const definition = {",
+      '  manifest: { id: "example.options", version: "1.0.0" },',
+      "  implementation: () => preservedSourceIdentifier,",
+      "};",
+    ].join("\n");
+    await writeFile(entry, source);
+    await runComponentOnceCli(["build", entry, "--renderer", "test", "--out", regularPath]);
+    await runComponentOnceCli(["build", entry, "--renderer", "test", "--minify", "--no-sourcemap", "--out", optimizedPath]);
+    await runComponentOnceCli(["build", entry, "--renderer", "test", "--minify", "--no-minify", "--no-sourcemap", "--sourcemap", "--out", explicitPath]);
+
+    const regular = parseTrustedComponentPackage(await readFile(regularPath));
+    const optimized = parseTrustedComponentPackage(await readFile(optimizedPath));
+    const explicit = parseTrustedComponentPackage(await readFile(explicitPath));
+    expect(regular.bundle.code).toContain("sourceMappingURL=data:application/json;base64,");
+    expect(optimized.bundle.code).not.toContain("sourceMappingURL=");
+    expect(optimized.bundle.code.length).toBeLessThan(regular.bundle.code.length);
+    expect(explicit.bundle.code).toBe(regular.bundle.code);
+    expect(optimized.manifest).toEqual(regular.manifest);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
