@@ -187,6 +187,9 @@ not need to install or know about it. Transitive bare imports also need an expli
 `--bundle` or `--external` entry; selecting one package does not automatically allow
 all of its dependencies. Package subpaths are included, but similarly named packages
 are not. Packages without an exports map resolve their `module` field before `main`.
+Package-private `#imports` that resolve within their package are followed like
+relative files, including native patterns and conditions. Aliases to other
+packages still need an explicit bundle or host-external choice for that alias.
 Selected CSS package imports also resolve through the package; CSS Modules retain
 the compilation namespace, including direct package subpaths. Dependency identities
 come from the import graph, so statically resolved linked package imports retain

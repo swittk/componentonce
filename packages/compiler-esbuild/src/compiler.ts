@@ -747,7 +747,7 @@ async function collectPortableDependencies(
   const entryPath = metafile.inputs[normalizedEntry] === undefined ? "<stdin>" : normalizedEntry;
   const queue = [{ path: entryPath, inPackage: false }];
   const processed = new Map<string, boolean>();
-  const packageTypes = new Map<string, boolean>();
+  const packageScopes = new Map<string, PackageScope | null>();
   for (let index = 0; index < queue.length; index += 1) {
     const current = queue[index]!;
     const previous = processed.get(current.path);
@@ -771,7 +771,7 @@ async function collectPortableDependencies(
       const isSource = [".js", ".jsx", ".ts", ".tsx"].includes(extension) &&
         !configuredExtensions.some((suffix) => absolutePath.toLowerCase().endsWith(suffix));
       const modulePath = inPackage && isSource &&
-        await isEsmPackage(dirname(absolutePath), packageTypes)
+        (await findPackageScope(dirname(absolutePath), packageScopes))?.isEsm
         ? stablePath.slice(0, -extension.length) + (extension.startsWith(".t") ? ".mts" : ".mjs")
         : stablePath;
       dependencies.set(absolutePath, { stablePath, modulePath, virtual: inPackage });
@@ -780,22 +780,31 @@ async function collectPortableDependencies(
   return dependencies;
 }
 
-/** Find the nearest package type without following a linked package back to the caller's directory. */
-async function isEsmPackage(directory: string, cache: Map<string, boolean>): Promise<boolean> {
+/** The nearest package scope supplies native import aliases and module classification. */
+interface PackageScope {
+  readonly directory: string;
+  readonly isEsm: boolean;
+}
+
+/** Find the nearest package without following a linked package back to the caller's directory. */
+async function findPackageScope(
+  directory: string,
+  cache: Map<string, PackageScope | null>,
+): Promise<PackageScope | null> {
   const cached = cache.get(directory);
   if (cached !== undefined) return cached;
-  if (basename(directory) === "node_modules") return false;
-  let value: boolean;
+  if (basename(directory) === "node_modules") return null;
+  let scope: PackageScope | null;
   try {
     const manifest = JSON.parse((await readFile(resolve(directory, "package.json"), "utf8")).replace(/^\uFEFF/u, "")) as { type?: string };
-    value = manifest.type === "module";
+    scope = { directory, isEsm: manifest.type === "module" };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     const parent = dirname(directory);
-    value = parent !== directory && await isEsmPackage(parent, cache);
+    scope = parent === directory ? null : await findPackageScope(parent, cache);
   }
-  cache.set(directory, value);
-  return value;
+  cache.set(directory, scope);
+  return scope;
 }
 
 /** Keep native package resolution while replacing emitted dependency paths with portable graph identities. */
@@ -973,7 +982,7 @@ function createCssModuleNamespacePlugin(
         if (args.pluginData?.componentOnceResolvingPackage) return undefined;
         const reference = splitPathSuffix(args.path);
         if (matchesBundledModule(reference.path, bundledModules) ||
-            (reference.path.startsWith(".") && !isCssReferenceKind(args.kind))) {
+            ((reference.path.startsWith(".") || args.path.startsWith("#")) && !isCssReferenceKind(args.kind))) {
           // Native resolution supplies both package aliases and extensionless relative filenames.
           const resolved = await buildApi.resolve(args.path, {
             kind: args.kind,
@@ -1033,7 +1042,9 @@ function createHostExternalPlugin(
   return {
     name: "componentonce-host-externals",
     setup(buildApi) {
-      buildApi.onResolve({ filter: /.*/ }, (args) => {
+      const packageScopes = new Map<string, PackageScope | null>();
+      buildApi.onResolve({ filter: /.*/ }, async (args) => {
+        if (args.pluginData?.componentOnceResolvingPrivate) return undefined;
         if (isCssReferenceKind(args.kind)) {
           const reference = splitPathSuffix(args.path);
           if (!isNonFileCssPath(reference.path) &&
@@ -1048,6 +1059,24 @@ function createHostExternalPlugin(
           matchesBundledModule(args.path, bundledModules)
         ) {
           return undefined;
+        }
+        if (args.path.startsWith("#")) {
+          // Let esbuild interpret imports maps, patterns, and conditions. A
+          // package-local target is like a relative import, not another package.
+          const resolved = await buildApi.resolve(args.path, {
+            kind: args.kind,
+            namespace: "file",
+            importer: args.pluginData?.realPath ?? args.importer,
+            resolveDir: args.resolveDir,
+            with: args.with,
+            pluginData: { ...args.pluginData, componentOnceResolvingPrivate: true },
+          });
+          if (resolved.errors.length > 0) return resolved;
+          const scope = await findPackageScope(args.resolveDir, packageScopes);
+          if (scope !== null && resolved.namespace === "file" && !resolved.external) {
+            const targetScope = await findPackageScope(dirname(resolved.path), packageScopes);
+            if (targetScope?.directory === scope.directory) return resolved;
+          }
         }
         return {
           errors: [

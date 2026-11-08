@@ -655,3 +655,109 @@ it.each([".js", ".worker.js"])("preserves bundled worker asset extensions with t
     expect(Buffer.from(asset.content, "base64").toString("utf8")).toBe(workerSource);
   });
 });
+
+it("resolves linked package-private imports, conditions, patterns, and CSS with portable identities", async () => {
+  const compile = async (targetDirectory: string) => {
+    let result!: Awaited<ReturnType<typeof compileTrustedModule>>;
+    await withPackageFixture(async (root) => {
+      const helper = join(root, "node_modules", "@fixture", "helper");
+      await mkdir(join(helper, "locales"));
+      await writeFile(join(helper, "package.json"), JSON.stringify({
+        name: "@fixture/helper", type: "module", exports: "./index.js",
+        imports: {
+          "#state": { import: "./state.js", require: "./state.cjs" },
+          "#locale/*": "./locales/*.js",
+          "#styles": "./card.module.css",
+        },
+      }));
+      await writeFile(join(helper, "index.js"), `
+        import { state } from "#state";
+        import { label } from "#locale/en";
+        import styles from "#styles";
+        export { state, label, styles };
+        export const load = () => import("#state");
+        export const loadCjs = () => require("#state");
+      `);
+      await writeFile(join(helper, "state.js"), 'export const state = { mode: "import" };');
+      await writeFile(join(helper, "state.cjs"), 'exports.mode = "require";');
+      await writeFile(join(helper, "locales", "en.js"), 'export const label = "hello";');
+      await writeFile(join(helper, "card.module.css"), ".root { color: red; }");
+      const target = join(root, targetDirectory, "helper");
+      await mkdir(join(root, targetDirectory), { recursive: true });
+      await rename(helper, target);
+      await symlink(target, helper, "dir");
+      result = await compileTrustedModule({
+        source: 'export * from "@fixture/helper";',
+        sourceFileName: "entry.ts", resolveDir: root,
+        bundleModules: ["@fixture/helper"],
+      });
+      const loaded = instantiateTrustedBundle<{
+        state: { mode: string }; label: string; styles: { root: string };
+        load(): Promise<{ state: { mode: string } }>;
+        loadCjs(): { mode: string };
+      }>(result, { externals: {} });
+      expect(result.externalModules).toEqual([]);
+      expect(loaded.state.mode).toBe("import");
+      expect((await loaded.load()).state).toBe(loaded.state);
+      expect(loaded.loadCjs().mode).toBe("require");
+      expect(loaded.label).toBe("hello");
+      const css = Buffer.from(result.assets.find((asset) => asset.path === "component.css")!.content, "base64").toString("utf8");
+      expect(css).toContain("." + loaded.styles.root);
+      expect(loaded.styles.root).not.toBe("card_root");
+    });
+    return result;
+  };
+  const first = await compile("store-a");
+  const second = await compile("other-store/nested");
+  expect(first.sha256).toBe(second.sha256);
+  expect(first.assets).toEqual(second.assets);
+});
+
+it("resolves package-private file imports from the entry package", async () => {
+  await withPackageFixture(async (root) => {
+    await writeFile(join(root, "package.json"), JSON.stringify({
+      type: "module", imports: { "#local": "./local.js" },
+    }));
+    await writeFile(join(root, "local.js"), 'export const value = "local";');
+    const artifact = await compileTrustedModule({
+      source: 'export { value } from "#local";',
+      sourceFileName: "entry.ts", resolveDir: root,
+    });
+    expect(instantiateTrustedBundle<{ value: string }>(artifact, { externals: {} }).value).toBe("local");
+  });
+});
+
+it.each(["sibling", "nested"])("retains explicit bundled and host-owned choices for private aliases to %s dependencies", async (layout) => {
+  await withPackageFixture(async (root) => {
+    const helper = join(root, "node_modules", "@fixture", "helper");
+    await writeFile(join(helper, "package.json"), JSON.stringify({
+      name: "@fixture/helper", type: "module", exports: "./index.js",
+      imports: { "#dependency": "@fixture/formatter" },
+    }));
+    await writeFile(join(helper, "index.js"), 'export { value } from "#dependency";');
+    const formatter = join(root, "node_modules", "@fixture", "formatter");
+    await writeFile(join(formatter, "format.js"), 'export const value = "bundled";');
+    if (layout === "nested") {
+      const scopedModules = join(helper, "node_modules", "@fixture");
+      await mkdir(scopedModules, { recursive: true });
+      await rename(formatter, join(scopedModules, "formatter"));
+    }
+    const input = {
+      source: 'export { value } from "@fixture/helper";',
+      sourceFileName: "entry.ts", resolveDir: root,
+      bundleModules: ["@fixture/helper"],
+    };
+    await expect(compileTrustedModule(input))
+      .rejects.toThrow('Import "#dependency" is neither a bundled implementation module nor an allowed host external.');
+    const bundled = await compileTrustedModule({
+      ...input, bundleModules: [...input.bundleModules, "#dependency"],
+    });
+    expect(instantiateTrustedBundle<{ value: string }>(bundled, { externals: {} }).value).toBe("bundled");
+    const external = await compileTrustedModule({ ...input, externalModules: ["#dependency"] });
+    const marker = {};
+    expect(external.externalModules).toEqual(["#dependency"]);
+    expect(instantiateTrustedBundle<{ value: object }>(external, {
+      externals: { "#dependency": { value: marker } },
+    }).value).toBe(marker);
+  });
+});
