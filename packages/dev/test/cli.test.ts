@@ -6,11 +6,17 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
 import { runComponentOnceDevCli } from "../dist/index.js";
+import { createComponentOnceDevServer } from "../dist/server.js";
+
+vi.mock("../dist/server.js", () => ({
+  createComponentOnceDevServer: vi.fn(),
+}));
 
 const execFileAsync = promisify(execFile);
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.mocked(createComponentOnceDevServer).mockReset();
 });
 
 it("does not let help flags satisfy an option that requires a value", async () => {
@@ -47,4 +53,29 @@ it("runs the dev CLI when invoked through a symlink", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+
+it("forwards repeated --bundle options to the dev server", async () => {
+  const stop = new Error("Stop after parsing.");
+  vi.mocked(createComponentOnceDevServer).mockRejectedValueOnce(stop);
+  await expect(runComponentOnceDevCli([
+    "entry.tsx",
+    "--bundle", "@fixture/first",
+    "--bundle", "@fixture/second/subpath",
+  ])).rejects.toBe(stop);
+  expect(createComponentOnceDevServer).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({
+      entry: "entry.tsx",
+      bundleModules: ["@fixture/first", "@fixture/second/subpath"],
+    }),
+  );
+});
+
+it.each([
+  ["entry.tsx", "--bundle"],
+  ["entry.tsx", "--bundle", "--help"],
+])("rejects a missing --bundle value: %j", async (...args) => {
+  await expect(runComponentOnceDevCli(args)).rejects.toThrow("--bundle requires a value.");
+  expect(createComponentOnceDevServer).not.toHaveBeenCalled();
 });

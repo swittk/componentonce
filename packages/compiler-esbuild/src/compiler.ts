@@ -319,7 +319,7 @@ export async function compileTrustedModule(
       plugins: [
         createPortableDependencyPlugin(compilation.dependencies, loaders, workingDirectory, input.jsx ?? "transform"),
         createCssModuleNamespacePlugin(
-          compilation.namespace, workingDirectory, bundledModules, compilation.dependencies,
+          compilation.namespace, workingDirectory, bundledModules, compilation.dependencies, loaders,
         ),
         createHostExternalPlugin(allowedExternals, bundledModules),
       ],
@@ -845,9 +845,15 @@ function createPortableDependencyPlugin(
       buildApi.onLoad({ filter: /.*/, namespace }, async (args) => {
         const realPath = paths.get(args.path)!;
         const transformed = transformedSources.get(realPath);
+        const originalLoader = loaderForPath(realPath);
+        // TypeScript module classification lets esbuild erase type-only re-exports
+        // during linking, even after the per-file transform has removed declarations.
+        const transformedLoader = originalLoader === "ts" || originalLoader === "tsx"
+          ? originalLoader
+          : jsx === "preserve" ? "jsx" : "js";
         return {
           contents: transformed ?? await readFile(realPath),
-          loader: transformed === undefined ? loaderForPath(realPath) : jsx === "preserve" ? "jsx" : "js",
+          loader: transformed === undefined ? originalLoader : transformedLoader,
           resolveDir: dirname(realPath),
           watchFiles: [realPath],
           pluginData: { realPath },
@@ -890,8 +896,18 @@ function createCssModuleNamespacePlugin(
   workingDirectory: string,
   bundledModules: ReadonlySet<string>,
   dependencies: ReadonlyMap<string, PortableDependency>,
+  loaders: Readonly<Record<string, ComponentOnceAdditionalLoader>>,
 ): Plugin {
   const namespace = "componentonce-local-css";
+  const effectiveLoaders: Readonly<Record<string, ComponentOnceAdditionalLoader>> = {
+    ".module.css": "local-css",
+    ...loaders,
+  };
+  const extensions = Object.keys(effectiveLoaders).sort((left, right) => right.length - left.length);
+  const isLocalCssFile = (path: string): boolean => {
+    const extension = extensions.find((suffix) => path.toLowerCase().endsWith(suffix));
+    return extension !== undefined && effectiveLoaders[extension] === "local-css";
+  };
   return {
     name: "componentonce-css-module-namespace",
     setup(buildApi) {
@@ -902,7 +918,7 @@ function createCssModuleNamespacePlugin(
         const stablePath = dependencies.get(realPath)?.stablePath ??
           relative(workingDirectory, realPath).replace(/\\/gu, "/");
         const pathNamespace = createHash("sha256").update(stablePath).digest("hex").slice(0, 12);
-        const originalName = basename(realPath, ".module.css");
+        const originalName = basename(realPath, realPath.endsWith(".module.css") ? ".module.css" : extname(realPath));
         return {
           path:
             originalName +
@@ -931,13 +947,15 @@ function createCssModuleNamespacePlugin(
             pluginData: { ...args.pluginData, componentOnceResolvingPackage: true },
           });
           if (resolved.errors.length > 0 || resolved.external ||
-              !resolved.path.endsWith(".module.css")) return resolved;
+              !isLocalCssFile(resolved.path)) return resolved;
           return {
             ...await resolveModule(resolved.pluginData?.realPath ?? resolved.path, args.resolveDir, resolved.suffix),
             warnings: resolved.warnings,
           };
         }
-        if (!reference.path.startsWith(".") || !reference.path.endsWith(".module.css")) {
+        if (!isLocalCssFile(reference.path) ||
+            (!reference.path.startsWith(".") && !isCssReferenceKind(args.kind)) ||
+            (isCssReferenceKind(args.kind) && isNonFileCssPath(reference.path))) {
           return undefined;
         }
         return resolveModule(reference.path, args.resolveDir, reference.suffix);
@@ -947,7 +965,7 @@ function createCssModuleNamespacePlugin(
         if (isCssReferenceKind(args.kind) && isNonFileCssPath(reference.path)) {
           return resolveCssReference(reference.path, reference.suffix, args.resolveDir);
         }
-        if (reference.path.endsWith(".module.css")) {
+        if (isLocalCssFile(reference.path)) {
           return resolveModule(reference.path, args.resolveDir, reference.suffix);
         }
         if (isCssReferenceKind(args.kind)) {

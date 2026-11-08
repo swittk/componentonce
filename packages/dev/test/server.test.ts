@@ -5,10 +5,14 @@ import { request } from "node:http";
 import { expect, it } from "vitest";
 import { createComponentOnceDevServer } from "../dist/index.js";
 
-async function waitFor(url: string, predicate: (state: {source: {ok:boolean;revision:number}}) => boolean) {
+interface ServerState {
+  source: { ok: boolean; revision: number; diagnostics: readonly { text: string }[] };
+}
+
+async function waitFor(url: string, predicate: (state: ServerState) => boolean) {
   const end=Date.now()+10000;
   while (Date.now()<end) {
-    const state=await (await fetch(url+"/status")).json() as {source:{ok:boolean;revision:number}};
+    const state=await (await fetch(url+"/status")).json() as ServerState;
     if(predicate(state))return state;
     await new Promise((r)=>setTimeout(r,40));
   }
@@ -118,6 +122,62 @@ it("serves artifacts that bundle explicitly allowed bare implementation packages
     expect(artifact.artifact.code).toContain("test/dev-bundled");
   } finally {
     await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20000);
+
+
+it.each([
+  ["./relative", "Invalid bundled module specifier"],
+  ["react", "cannot be both bundled and external"],
+] as const)("rejects invalid bundle selection at startup: %s", async (specifier, message) => {
+  const dir = await mkdtemp(join(tmpdir(), "componentonce-server-invalid-bundle-"));
+  try {
+    const entry = join(dir, "entry.ts");
+    await writeFile(entry, 'export const definition={manifest:{id:"test/card",version:"1"},implementation:()=>null};');
+    await expect(createComponentOnceDevServer({
+      entry,
+      cwd: dir,
+      port: 0,
+      bundleModules: [specifier],
+    })).rejects.toThrow(message);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+it("reports an unowned transitive package import through /status", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "componentonce-server-unowned-bundle-"));
+  let server: Awaited<ReturnType<typeof createComponentOnceDevServer>> | undefined;
+  try {
+    const entry = join(dir, "entry.ts");
+    const packageDir = join(dir, "node_modules", "fixture-dev-bundle");
+    await mkdir(packageDir, { recursive: true });
+    await writeFile(join(packageDir, "package.json"), JSON.stringify({
+      name: "fixture-dev-bundle",
+      version: "1.0.0",
+      type: "module",
+      exports: "./index.js",
+    }));
+    await writeFile(join(packageDir, "index.js"),
+      'import { id } from "fixture-unowned"; export { id };');
+    await writeFile(entry,
+      'import { id } from "fixture-dev-bundle"; export const definition={manifest:{id,version:"1"},implementation:()=>null};');
+    server = await createComponentOnceDevServer({
+      entry,
+      cwd: dir,
+      port: 0,
+      bundleModules: ["fixture-dev-bundle"],
+    });
+    const state = await waitFor(server.url, ({ source }) =>
+      !source.ok && source.diagnostics.some(({ text }) =>
+        text.includes('Import "fixture-unowned" is neither a bundled implementation module nor an allowed host external.'),
+      ),
+    );
+    expect(state.source.ok).toBe(false);
+    expect((await fetch(server.url + "/artifact")).status).toBe(503);
+  } finally {
+    await server?.close();
     await rm(dir, { recursive: true, force: true });
   }
 }, 20000);

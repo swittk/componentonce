@@ -84,9 +84,20 @@ it("runs the built CLI when invoked through a symlink", async () => {
 });
 
 
-it("bundles both required packages from repeated --bundle options", async () => {
+it.each(["test", "react"])("bundles both required packages from repeated --bundle options for %s", async (renderer) => {
   const root = await mkdtemp(join(tmpdir(), "componentonce-cli-bundle-"));
   try {
+    if (renderer === "react") {
+      await mkdir(join(root, "node_modules", "@componentonce"), { recursive: true });
+      await symlink(
+        fileURLToPath(new URL("../node_modules/react", import.meta.url)),
+        join(root, "node_modules", "react"),
+      );
+      await symlink(
+        fileURLToPath(new URL("../../react", import.meta.url)),
+        join(root, "node_modules", "@componentonce", "react"),
+      );
+    }
     const packageDirectory = join(root, "node_modules", "fixture-cli-bundle");
     await mkdir(packageDirectory, { recursive: true });
     await writeFile(
@@ -125,7 +136,7 @@ it("bundles both required packages from repeated --bundle options", async () => 
       "build",
       entry,
       "--renderer",
-      "test",
+      renderer,
       "--bundle",
       "fixture-cli-bundle",
       "--bundle",
@@ -134,6 +145,7 @@ it("bundles both required packages from repeated --bundle options", async () => 
       out,
     ]);
     const componentPackage = parseTrustedComponentPackage(await readFile(out));
+    expect(componentPackage.renderer).toBe(renderer);
     expect(componentPackage.manifest.id).toBe("consumer.bundled");
     expect(componentPackage.bundle.externalModules).toEqual([]);
   } finally {

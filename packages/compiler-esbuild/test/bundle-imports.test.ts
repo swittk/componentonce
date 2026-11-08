@@ -54,8 +54,12 @@ it("bundles scoped package subpaths and explicitly selected transitive dependenc
   });
 });
 
-it("requires an explicit ownership choice for transitive bare imports", async () => {
+it.each(["static", "dynamic"])("requires an explicit ownership choice for %s transitive bare imports", async (kind) => {
   await withPackageFixture(async (root) => {
+    if (kind === "dynamic") {
+      await writeFile(join(root, "node_modules", "@fixture", "formatter", "format.js"),
+        'export const format = () => import("@fixture/helper");');
+    }
     await expect(compileTrustedModule({
       source: 'import { format } from "@fixture/formatter"; export { format };',
       sourceFileName: "entry.ts", resolveDir: root,
@@ -134,23 +138,31 @@ it.each([
   });
 });
 
-it.each(["card.module.css", "card"])("namespaces bundled CSS subpath %s by content and portable dependency paths", async (subpath) => {
+it.each(["card.module.css", "card", "card.skin", "skin", "relative.skin", "composed.skin"])("namespaces bundled CSS subpath %s by content and portable dependency paths", async (subpath) => {
   const compile = async (color: string) => {
     let className = "";
     await withPackageFixture(async (root) => {
       const helper = join(root, "node_modules", "@fixture", "helper");
       await writeFile(join(helper, "package.json"), JSON.stringify({
         name: "@fixture/helper", version: color === "red" ? "1.0.0" : "2.0.0",
-        exports: { "./card.module.css": "./card.module.css", "./card": "./card.module.css" },
+        exports: {
+          "./card.module.css": "./card.module.css", "./card": "./card.module.css",
+          "./card.skin": "./card.skin", "./skin": "./card.skin",
+          "./relative.skin": "./relative.js", "./composed.skin": "./composed.skin",
+        },
       }));
-      await writeFile(join(helper, "card.module.css"), ".root { color: " + color + "; }");
+      const stylesheet = subpath.includes("skin") ? "card.skin" : "card.module.css";
+      await writeFile(join(helper, stylesheet), ".root { color: " + color + "; }");
+      await writeFile(join(helper, "relative.js"), 'export { default } from "./card.skin";');
+      await writeFile(join(helper, "composed.skin"), '.root { composes: root from "./card.skin"; }');
       const artifact = await compileTrustedModule({
         source: 'import styles from "@fixture/helper/' + subpath + '"; export { styles };',
         sourceFileName: "entry.ts", resolveDir: root, bundleModules: ["@fixture/helper"],
+        ...(stylesheet.endsWith(".skin") ? { loaders: { ".skin": "local-css" as const } } : {}),
       });
       className = instantiateTrustedBundle<{ styles: { root: string } }>(artifact, { externals: {} }).styles.root;
       const css = Buffer.from(artifact.assets!.find((asset) => asset.path === "component.css")!.content, "base64").toString("utf8");
-      expect(css).toContain("." + className);
+      for (const token of className.split(" ")) expect(css).toContain("." + token);
     });
     return className;
   };
@@ -403,5 +415,25 @@ it.each(["entry", "bundled package"])("preserves conditional exports for dynamic
     expect(artifact.externalModules).toEqual([]);
     expect((await loaded.load()).value).toBe("import branch");
     expect(loaded.loadRequired().value).toBe("require branch");
+  });
+});
+
+
+it.each(["Shape", "Shape as PublicShape"])("preserves erased TypeScript re-exports in bundled sources: %s", async (typeExport) => {
+  await withPackageFixture(async (root) => {
+    const helper = join(root, "node_modules", "@fixture", "helper");
+    await writeFile(join(helper, "package.json"), JSON.stringify({
+      name: "@fixture/helper", version: "1.0.0", type: "module", exports: "./index.ts",
+    }));
+    await writeFile(join(helper, "models.ts"), `
+      export interface Shape { label: string }
+      export const value = "runtime value";
+    `);
+    await writeFile(join(helper, "index.ts"), 'export { ' + typeExport + ', value } from "./models";');
+    const artifact = await compileTrustedModule({
+      source: 'export * from "@fixture/helper";',
+      sourceFileName: "entry.ts", resolveDir: root, bundleModules: ["@fixture/helper"],
+    });
+    expect(instantiateTrustedBundle<{ value: string }>(artifact, { externals: {} }).value).toBe("runtime value");
   });
 });
