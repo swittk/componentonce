@@ -111,6 +111,7 @@ export async function runComponentOnceCli(args: readonly string[]): Promise<void
   );
 }
 
+/** Parse build options while retaining repeated import-ownership selections. */
 function parseBuildArgs(args: readonly string[]): CliBuildOptions {
   const entry = args[0];
   if (entry === undefined || entry.startsWith("-")) {

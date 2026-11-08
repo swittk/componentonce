@@ -108,9 +108,7 @@ export async function createComponentOnceDevServer(options: ComponentOnceDevServ
     for (const connection of connections) connection.write("event: status\ndata: " + JSON.stringify(snapshot()) + "\n\n");
   };
   const stylesheet = await readFile(resolve(runtimeDirectory, "workbench.css"));
-  const uiBuild = await esbuildBuild({ entryPoints: [resolve(runtimeDirectory, "ui.js")], bundle: true, write: false, format: "esm", platform: "browser", target: "es2022", logLevel: "silent" });
-  const uiBytes = uiBuild.outputFiles[0]?.contents;
-  if (uiBytes === undefined) throw new Error("Could not compile the workbench UI.");
+  let uiBytes: Uint8Array;
   const html = (preview: boolean) => '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ComponentOnce Dev</title>' +
     (preview ? '<link rel="stylesheet" href="/preview.css">' : '<link rel="stylesheet" href="/workbench.css">') +
     '</head><body>' + (preview ? '<div id="preview-root"></div>' : '<div id="workbench"></div>') +
@@ -186,6 +184,31 @@ export async function createComponentOnceDevServer(options: ComponentOnceDevServ
     if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, "ComponentOnce dev compiler cleanup failed.");
   };
   try {
+    // Reuse compiler ownership validation before building hosts or binding a port.
+    watcher = await watchTrustedModuleFile({
+      entry,
+      jsx: "automatic",
+      externalModules: sourceExternals,
+      ...(options.bundleModules === undefined
+        ? {}
+        : { bundleModules: options.bundleModules }),
+      onBuild(result) {
+        if (result.ok) {
+          revision += 1;
+          currentArtifact = { revision, definitionExport: options.definitionExport ?? "definition", artifact: result.artifact };
+        }
+        sourceStatus = {
+          stage: "source", ok: result.ok, revision, hostRevision,
+          durationMs: result.durationMs,
+          diagnostics: result.ok ? result.artifact.diagnostics : result.diagnostics,
+        };
+        broadcast();
+      },
+    });
+    const uiBuild = await esbuildBuild({ entryPoints: [resolve(runtimeDirectory, "ui.js")], bundle: true, write: false, format: "esm", platform: "browser", target: "es2022", logLevel: "silent" });
+    const output = uiBuild.outputFiles[0]?.contents;
+    if (output === undefined) throw new Error("Could not compile the workbench UI.");
+    uiBytes = output;
     await new Promise<void>((done, reject) => {
       http.once("error", reject);
       http.listen(portOption, bind, () => { http.off("error", reject); done(); });
@@ -240,26 +263,6 @@ export async function createComponentOnceDevServer(options: ComponentOnceDevServ
     // The independent workbench remains usable after an initial host compilation failure.
     try { await harness.rebuild(); } catch { /* onEnd reports errors; keep watching for a fix. */ }
     await harness.watch();
-    watcher = await watchTrustedModuleFile({
-      entry,
-      jsx: "automatic",
-      externalModules: sourceExternals,
-      ...(options.bundleModules === undefined
-        ? {}
-        : { bundleModules: options.bundleModules }),
-      onBuild(result) {
-        if (result.ok) {
-          revision += 1;
-          currentArtifact = { revision, definitionExport: options.definitionExport ?? "definition", artifact: result.artifact };
-        }
-        sourceStatus = {
-          stage: "source", ok: result.ok, revision, hostRevision,
-          durationMs: result.durationMs,
-          diagnostics: result.ok ? result.artifact.diagnostics : result.diagnostics,
-        };
-        broadcast();
-      },
-    });
     const hostsForUrls =
       bind === "0.0.0.0"
         ? advertisedNetworkAddresses("IPv4")

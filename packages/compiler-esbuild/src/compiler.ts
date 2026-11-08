@@ -715,7 +715,8 @@ async function collectPortableDependencies(
   bundledModules: ReadonlySet<string>,
 ): Promise<ReadonlyMap<string, PortableDependency>> {
   const dependencies = new Map<string, PortableDependency>();
-  const entryPath = metafile.inputs[sourceFileName] === undefined ? "<stdin>" : sourceFileName;
+  const normalizedEntry = relative(root, resolve(root, sourceFileName)).replace(/\\/gu, "/");
+  const entryPath = metafile.inputs[normalizedEntry] === undefined ? "<stdin>" : normalizedEntry;
   const queue = [{ path: entryPath, inPackage: false }];
   const processed = new Map<string, boolean>();
   const packageTypes = new Map<string, boolean>();
@@ -891,6 +892,7 @@ function updateNamespacedHash(
   hash.update(String(contents.byteLength)).update(":").update(contents);
 }
 
+/** Resolve local CSS filenames before assigning content-specific, portable class namespaces. */
 function createCssModuleNamespacePlugin(
   compilationNamespace: string,
   workingDirectory: string,
@@ -938,12 +940,15 @@ function createCssModuleNamespacePlugin(
       buildApi.onResolve({ filter: /.*/ }, async (args) => {
         if (args.pluginData?.componentOnceResolvingPackage) return undefined;
         const reference = splitPathSuffix(args.path);
-        if (matchesBundledModule(reference.path, bundledModules)) {
-          // Resolve package exports/main fields first, including extensionless CSS aliases.
+        if (matchesBundledModule(reference.path, bundledModules) ||
+            (reference.path.startsWith(".") && !isCssReferenceKind(args.kind))) {
+          // Native resolution supplies both package aliases and extensionless relative filenames.
           const resolved = await buildApi.resolve(args.path, {
             kind: args.kind,
             namespace: "file",
+            importer: args.pluginData?.realPath ?? args.importer,
             resolveDir: args.resolveDir,
+            with: args.with,
             pluginData: { ...args.pluginData, componentOnceResolvingPackage: true },
           });
           if (resolved.errors.length > 0 || resolved.external ||
@@ -988,6 +993,7 @@ function createCssModuleNamespacePlugin(
   };
 }
 
+/** Enforce explicit ownership for bare imports while retaining native local-file resolution. */
 function createHostExternalPlugin(
   allowedExternals: ReadonlySet<string>,
   bundledModules: ReadonlySet<string>,
@@ -1027,6 +1033,7 @@ function createHostExternalPlugin(
   };
 }
 
+/** Match an explicitly selected package or one of its subpaths without matching sibling packages. */
 function matchesBundledModule(
   specifier: string,
   bundledModules: ReadonlySet<string>,
@@ -1107,6 +1114,7 @@ function normalizeAllowedExternals(additionalExternals: readonly string[]): Read
 }
 
 
+/** Validate and deduplicate package selections, rejecting overlap with host-owned imports. */
 function normalizeBundledModules(
   bundledModules: readonly string[],
   allowedExternals: ReadonlySet<string>,

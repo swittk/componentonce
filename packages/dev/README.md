@@ -75,7 +75,7 @@ export default defineReactDevHost({
 
 React, react/jsx-runtime, react/jsx-dev-runtime, and @componentonce/react are pinned to the workbench/browser host singleton. A host profile cannot accidentally replace them with another React copy.
 
-Use --external exact/specifier for every additional import allowed by the production component compiler.
+Use --external exact/specifier for host-owned imports and --bundle package/specifier for implementation dependencies.
 
 ## Function-valued Props / Payload
 
@@ -176,7 +176,12 @@ The example intentionally uses generic names (`Portfolio workspace`, `Brand proj
 
 The workbench uses the same import ownership rule as production builds.
 
-    componentonce dev ./src/card.tsx       --host ./dev/componentonce-host.ts       --external @my-app/sdk       --bundle @my-team/card-formatters
+```sh
+componentonce dev ./src/card.tsx \
+  --host ./dev/componentonce-host.ts \
+  --external @my-app/sdk \
+  --bundle @my-team/card-formatters
+```
 
 External is host ABI. Bundle is component implementation and is compiled into
 the artifact. This prevents a component from working in development only

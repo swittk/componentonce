@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { request } from "node:http";
+import { createServer, request } from "node:http";
 import { expect, it } from "vitest";
 import { createComponentOnceDevServer } from "../dist/index.js";
 
@@ -132,16 +132,24 @@ it.each([
   ["react", "cannot be both bundled and external"],
 ] as const)("rejects invalid bundle selection at startup: %s", async (specifier, message) => {
   const dir = await mkdtemp(join(tmpdir(), "componentonce-server-invalid-bundle-"));
+  const occupied = createServer();
+  await new Promise<void>((done, reject) => {
+    occupied.once("error", reject);
+    occupied.listen(0, "127.0.0.1", done);
+  });
   try {
     const entry = join(dir, "entry.ts");
     await writeFile(entry, 'export const definition={manifest:{id:"test/card",version:"1"},implementation:()=>null};');
+    const address = occupied.address();
+    if (address === null || typeof address === "string") throw new Error("Missing occupied port.");
     await expect(createComponentOnceDevServer({
       entry,
       cwd: dir,
-      port: 0,
+      port: address.port,
       bundleModules: [specifier],
     })).rejects.toThrow(message);
   } finally {
+    await new Promise<void>((done) => occupied.close(() => done()));
     await rm(dir, { recursive: true, force: true });
   }
 });

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { expect, it } from "vitest";
 import { runComponentOnceCli } from "../src/cli.js";
 import { parseTrustedComponentPackage } from "../src/package.js";
+import { instantiateTrustedBundle } from "../src/compiler.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -111,7 +112,7 @@ it.each(["test", "react"])("bundles both required packages from repeated --bundl
     );
     await writeFile(
       join(packageDirectory, "index.js"),
-      'import { suffix } from "fixture-cli-helper"; export const id = "consumer." + suffix;\n',
+      'import { suffix } from "fixture-cli-helper"; export const id = "consumer." + suffix; export const format = (prefix) => prefix + " " + suffix;\n',
     );
     const helperDirectory = join(root, "node_modules", "fixture-cli-helper");
     await mkdir(helperDirectory, { recursive: true });
@@ -124,14 +125,18 @@ it.each(["test", "react"])("bundles both required packages from repeated --bundl
     await writeFile(
       entry,
       [
-        'import { id } from "fixture-cli-bundle";',
+        'import { id, format } from "fixture-cli-bundle";',
         "export const definition = {",
         '  manifest: { id, version: "1.0.0" },',
-        "  implementation: () => null,",
+        '  implementation: () => format("rendered"),',
         "};",
       ].join("\n"),
     );
 
+    await expect(runComponentOnceCli([
+      "build", entry, "--renderer", renderer,
+      "--bundle", "fixture-cli-bundle", "--out", out,
+    ])).rejects.toThrow('Import "fixture-cli-helper" is neither a bundled implementation module nor an allowed host external.');
     await runComponentOnceCli([
       "build",
       entry,
@@ -148,6 +153,10 @@ it.each(["test", "react"])("bundles both required packages from repeated --bundl
     expect(componentPackage.renderer).toBe(renderer);
     expect(componentPackage.manifest.id).toBe("consumer.bundled");
     expect(componentPackage.bundle.externalModules).toEqual([]);
+    const loaded = instantiateTrustedBundle<{
+      definition: { implementation(): string };
+    }>(componentPackage.bundle, { externals: {} });
+    expect(loaded.definition.implementation()).toBe("rendered bundled");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

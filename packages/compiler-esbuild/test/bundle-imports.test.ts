@@ -138,7 +138,7 @@ it.each([
   });
 });
 
-it.each(["card.module.css", "card", "card.skin", "skin", "relative.skin", "composed.skin"])("namespaces bundled CSS subpath %s by content and portable dependency paths", async (subpath) => {
+it.each(["card.module.css", "card", "card.skin", "skin", "relative.skin", "composed.skin", "extensionless"])("namespaces bundled CSS subpath %s by content and portable dependency paths", async (subpath) => {
   const compile = async (color: string) => {
     let className = "";
     await withPackageFixture(async (root) => {
@@ -149,11 +149,13 @@ it.each(["card.module.css", "card", "card.skin", "skin", "relative.skin", "compo
           "./card.module.css": "./card.module.css", "./card": "./card.module.css",
           "./card.skin": "./card.skin", "./skin": "./card.skin",
           "./relative.skin": "./relative.js", "./composed.skin": "./composed.skin",
+          "./extensionless": "./extensionless.js",
         },
       }));
       const stylesheet = subpath.includes("skin") ? "card.skin" : "card.module.css";
       await writeFile(join(helper, stylesheet), ".root { color: " + color + "; }");
       await writeFile(join(helper, "relative.js"), 'export { default } from "./card.skin";');
+      await writeFile(join(helper, "extensionless.js"), 'export { default } from "./card.module";');
       await writeFile(join(helper, "composed.skin"), '.root { composes: root from "./card.skin"; }');
       const artifact = await compileTrustedModule({
         source: 'import styles from "@fixture/helper/' + subpath + '"; export { styles };',
@@ -271,7 +273,14 @@ it.each(["entry", "bundled package"])("loads dynamic host imports from the injec
   });
 });
 
-it.each(["package", "relative-first"])("emits identical linked package artifacts across target locations (%s)", async (order) => {
+it.each([
+  ["package", "entry.ts"],
+  ["relative-first", "entry.ts"],
+  ["package", "./entry.ts"],
+  ["relative-first", "./entry.ts"],
+  ["package", "nested/../entry.ts"],
+  ["relative-first", "nested/../entry.ts"],
+])("emits identical linked package artifacts across target locations (%s, %s)", async (order, sourceFileName) => {
   const compile = async (targetDirectory: string) => {
     let result: unknown;
     await withPackageFixture(async (root) => {
@@ -293,7 +302,7 @@ it.each(["package", "relative-first"])("emits identical linked package artifacts
       const artifact = await compileTrustedModule({
         source: (order === "relative-first" ? 'export { value as sharedValue } from "./shared/index.js";' : "") +
           'import "@fixture/helper/theme.css"; export { styles, value } from "@fixture/helper";',
-        sourceFileName: "entry.ts", resolveDir: root, bundleModules: ["@fixture/helper"],
+        sourceFileName, resolveDir: root, bundleModules: ["@fixture/helper"],
       });
       const { styles } = instantiateTrustedBundle<{ styles: { root: string } }>(artifact, { externals: {} });
       const css = artifact.assets.find((asset) => asset.path === "component.css")!;
@@ -434,6 +443,8 @@ it.each(["Shape", "Shape as PublicShape"])("preserves erased TypeScript re-expor
       source: 'export * from "@fixture/helper";',
       sourceFileName: "entry.ts", resolveDir: root, bundleModules: ["@fixture/helper"],
     });
-    expect(instantiateTrustedBundle<{ value: string }>(artifact, { externals: {} }).value).toBe("runtime value");
+    const loaded = instantiateTrustedBundle<{ value: string }>(artifact, { externals: {} });
+    expect(loaded.value).toBe("runtime value");
+    expect(Object.keys(loaded)).toEqual(["value"]);
   });
 });
