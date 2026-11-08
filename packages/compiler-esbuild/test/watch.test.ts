@@ -119,3 +119,41 @@ it.each(["exports", "main"] as const)("watches a bundled package resolved throug
     await rm(dir, { recursive: true, force: true });
   }
 }, 20000);
+
+it("refreshes private import scopes when a nested package manifest changes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "componentonce-watch-scopes-"));
+  const entry = join(dir, "entry.ts");
+  const nested = join(dir, "nested");
+  await mkdir(nested);
+  const manifest = JSON.stringify({ type: "module", imports: { "#value": "./value.js" } });
+  await writeFile(join(dir, "package.json"), manifest);
+  await writeFile(join(nested, "package.json"), manifest);
+  await writeFile(join(dir, "value.js"), 'export const label = "ancestor";');
+  await writeFile(join(nested, "value.js"), 'export const label = "nested";');
+  await writeFile(join(nested, "index.js"), 'export { label } from "#value";');
+  await writeFile(entry, 'export { label } from "./nested/index.js";');
+  const results: ComponentOnceWatchResult[] = [];
+  const watcher = await watchTrustedModuleFile({
+    entry,
+    onBuild(result) { results.push(result); },
+  });
+  const latestLabel = () => {
+    const result = results.at(-1);
+    expect(result?.ok).toBe(true);
+    if (!result?.ok) return undefined;
+    return instantiateTrustedBundle<{ label: string }>(result.artifact, { externals: {} }).label;
+  };
+  try {
+    await until(() => results.some((result) => result.ok));
+    expect(latestLabel()).toBe("nested");
+    await rm(join(nested, "package.json"));
+    await watcher.rebuild();
+    expect(latestLabel()).toBe("ancestor");
+    await writeFile(join(nested, "package.json"), manifest);
+    await watcher.rebuild();
+    expect(latestLabel()).toBe("nested");
+  } finally {
+    await watcher.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20000);

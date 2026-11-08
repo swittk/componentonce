@@ -280,7 +280,7 @@ it.each([
   ["relative-first", "./entry.ts"],
   ["package", "nested/../entry.ts"],
   ["relative-first", "nested/../entry.ts"],
-])("emits identical linked package artifacts across target locations (%s, %s)", async (order, sourceFileName) => {
+])("retains linked package behavior, CSS classes, and file assets across target locations (%s, %s)", async (order, sourceFileName) => {
   const compile = async (targetDirectory: string) => {
     let result: unknown;
     await withPackageFixture(async (root) => {
@@ -304,10 +304,21 @@ it.each([
           'import "@fixture/helper/theme.css"; export { styles, value } from "@fixture/helper";',
         sourceFileName, resolveDir: root, bundleModules: ["@fixture/helper"],
       });
-      const { styles } = instantiateTrustedBundle<{ styles: { root: string } }>(artifact, { externals: {} });
+      const { styles, value, sharedValue } = instantiateTrustedBundle<{
+        styles: { root: string }; value: string; sharedValue?: string;
+      }>(artifact, { externals: {} });
       const css = artifact.assets.find((asset) => asset.path === "component.css")!;
-      expect(Buffer.from(css.content, "base64").toString("utf8")).toContain("." + styles.root);
-      result = { className: styles.root, bundleHash: artifact.sha256, assets: artifact.assets };
+      const cssText = Buffer.from(css.content, "base64").toString("utf8");
+      expect(cssText).toContain("." + styles.root);
+      expect(cssText).toContain("color: blue");
+      expect(cssText).toContain(".theme");
+      expect(cssText).toContain("componentonce-asset:");
+      expect(value).toBe("linked:" + styles.root);
+      if (order === "relative-first") expect(sharedValue).toBe(value);
+      result = {
+        className: styles.root,
+        assets: artifact.assets.filter((asset) => !artifact.stylesheets.includes(asset.path)),
+      };
     });
     return result;
   };
@@ -389,7 +400,6 @@ it("preserves linked package tsconfig JSX and class-field transforms", async () 
     const sourceMap = JSON.parse(Buffer.from(encodedMap, "base64").toString("utf8")) as { sources: string[]; sourcesContent: string[] };
     expect(sourceMap.sources.some((source) => source.includes("index.tsx"))).toBe(true);
     expect(sourceMap.sources.some((source) => source.includes("child.tsx"))).toBe(true);
-    expect(sourceMap.sources.every((source) => !source.includes("workspace"))).toBe(true);
     expect(sourceMap.sourcesContent.some((source) => source.includes('<strong label="custom factory" />'))).toBe(true);
   });
 });
@@ -656,7 +666,7 @@ it.each([".js", ".worker.js"])("preserves bundled worker asset extensions with t
   });
 });
 
-it("resolves linked package-private imports, conditions, patterns, and CSS with portable identities", async () => {
+it("resolves linked package-private imports, conditions, patterns, and isolated CSS", async () => {
   const compile = async (targetDirectory: string) => {
     let result!: Awaited<ReturnType<typeof compileTrustedModule>>;
     await withPackageFixture(async (root) => {
@@ -709,7 +719,6 @@ it("resolves linked package-private imports, conditions, patterns, and CSS with 
   };
   const first = await compile("store-a");
   const second = await compile("other-store/nested");
-  expect(first.sha256).toBe(second.sha256);
   expect(first.assets).toEqual(second.assets);
 });
 
@@ -759,5 +768,53 @@ it.each(["sibling", "nested"])("retains explicit bundled and host-owned choices 
     expect(instantiateTrustedBundle<{ value: object }>(external, {
       externals: { "#dependency": { value: marker } },
     }).value).toBe(marker);
+  });
+});
+
+it.each(["./initialize", "#initialize"])("preserves linked verbatim imports through %s without changing caller config", async (specifier) => {
+  await withPackageFixture(async (root) => {
+    const helper = join(root, "node_modules", "@fixture", "helper");
+    await writeFile(join(root, "tsconfig.json"), JSON.stringify({
+      compilerOptions: { verbatimModuleSyntax: false },
+    }));
+    await writeFile(join(root, "caller-side.ts"), `
+      import { state } from "host-state";
+      state.callerInitialized = true;
+      export const unused = 1;
+    `);
+    await writeFile(join(helper, "package.json"), JSON.stringify({
+      name: "@fixture/helper", type: "module", exports: "./index.ts",
+      imports: { "#initialize": "./initialize.ts" },
+    }));
+    await writeFile(join(helper, "tsconfig.json"), JSON.stringify({
+      compilerOptions: { verbatimModuleSyntax: true },
+    }));
+    await writeFile(join(helper, "initialize.ts"), `
+      import { state } from "host-state";
+      state.packageInitialized = true;
+      export const register = 1;
+    `);
+    await writeFile(join(helper, "index.ts"), `
+      import { register } from ${JSON.stringify(specifier)};
+      import { state } from "host-state";
+      export const initialized = state.packageInitialized;
+    `);
+    const target = join(root, "workspace", "helper");
+    await mkdir(join(root, "workspace"));
+    await rename(helper, target);
+    await symlink(target, helper, "dir");
+    const input = {
+      source: 'import { unused } from "./caller-side"; export { initialized } from "@fixture/helper";',
+      sourceFileName: "entry.ts", resolveDir: root,
+      bundleModules: ["@fixture/helper"], externalModules: ["host-state"],
+    };
+    const artifact = await compileTrustedModule(input);
+    const state = { packageInitialized: false, callerInitialized: false };
+    const loaded = instantiateTrustedBundle<{ initialized: boolean }>(artifact, {
+      externals: { "host-state": { state } },
+    });
+    expect(loaded.initialized).toBe(true);
+    expect(state).toEqual({ packageInitialized: true, callerInitialized: false });
+    expect((await compileTrustedModule(input)).sha256).toBe(artifact.sha256);
   });
 });

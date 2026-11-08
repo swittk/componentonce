@@ -317,11 +317,6 @@ export async function compileTrustedModule(
       platform: "neutral",
       mainFields: PACKAGE_MAIN_FIELDS,
       plugins: [
-        // Glob matches bypass onResolve. Keep native dependency identities
-        // so static and glob imports share the same module instance.
-        ...(compilation.hasGlobImports ? [] : [
-          createPortableDependencyPlugin(compilation.dependencies, loaders, workingDirectory, input.jsx ?? "transform"),
-        ]),
         createCssModuleNamespacePlugin(
           compilation.namespace, workingDirectory, bundledModules, compilation.dependencies, loaders,
         ),
@@ -656,8 +651,7 @@ async function calculateCompilationNamespace(
   input: CompilationNamespaceInput,
 ): Promise<{
   readonly namespace: string;
-  readonly dependencies: ReadonlyMap<string, PortableDependency>;
-  readonly hasGlobImports: boolean;
+  readonly dependencies: ReadonlyMap<string, DependencyIdentity>;
 }> {
   const root = resolve(input.resolveDir ?? process.cwd());
   const result = await build({
@@ -699,229 +693,75 @@ async function calculateCompilationNamespace(
     ]);
   }
 
-  // esbuild records native import()/require() globs as synthetic external
-  // import-statement edges; their matched files appear only in inputs.
-  const hasGlobImports = Object.values(result.metafile.inputs).some((source) =>
-    source.imports.some((imported) =>
-      imported.external && imported.kind === "import-statement" &&
-      imported.path.startsWith(".") && imported.path.includes("*") &&
-      !input.allowedExternals.has(imported.path),
-    ),
-  );
-  const dependencies = new Map(await collectPortableDependencies(result.metafile, root, input.sourceFileName, input.bundledModules, input.loaders));
-  if (hasGlobImports) {
-    const entryPath = resolve(root, input.sourceFileName);
-    for (const path of Object.keys(result.metafile.inputs)) {
-      const absolutePath = resolve(root, splitPathSuffix(path).path);
-      if (path === "<stdin>" || absolutePath === entryPath || dependencies.has(absolutePath)) continue;
-      const stablePath = "dependency/" + dependencies.size + "/" + basename(absolutePath);
-      dependencies.set(absolutePath, { stablePath, modulePath: stablePath, virtual: false });
-    }
-  }
+  const dependencies = collectDependencyIdentities(result.metafile, root, input.sourceFileName);
   const hash = createHash("sha256");
   updateNamespacedHash(hash, "entry/" + basename(input.sourceFileName), Buffer.from(input.source));
   for (const [absolutePath, dependency] of dependencies) {
     updateNamespacedHash(hash, dependency.stablePath, await readFile(absolutePath));
   }
-  return { namespace: hash.digest("hex").slice(0, 16), dependencies, hasGlobImports };
+  return { namespace: hash.digest("hex").slice(0, 16), dependencies };
 }
 
-/** Physical inputs retain their resolver context but expose graph-based artifact identities. */
-interface PortableDependency {
+/** Graph-based source names used for content-dependent CSS isolation. */
+interface DependencyIdentity {
   readonly stablePath: string;
-  readonly modulePath: string;
-  readonly virtual: boolean;
 }
 
-/** Walk source-order import edges so package-store and workspace target paths do not enter hashes. */
-async function collectPortableDependencies(
+/** Keep CSS identities independent of package-store and workspace target paths. */
+function collectDependencyIdentities(
   metafile: Metafile,
   root: string,
   sourceFileName: string,
-  bundledModules: ReadonlySet<string>,
-  loaders: Readonly<Record<string, ComponentOnceAdditionalLoader>>,
-): Promise<ReadonlyMap<string, PortableDependency>> {
-  const dependencies = new Map<string, PortableDependency>();
-  const configuredExtensions = Object.keys(loaders);
+): ReadonlyMap<string, DependencyIdentity> {
+  const dependencies = new Map<string, DependencyIdentity>();
   const normalizedEntry = relative(root, resolve(root, sourceFileName)).replace(/\\/gu, "/");
   const entryPath = metafile.inputs[normalizedEntry] === undefined ? "<stdin>" : normalizedEntry;
-  const queue = [{ path: entryPath, inPackage: false }];
-  const processed = new Map<string, boolean>();
-  const packageScopes = new Map<string, PackageScope | null>();
-  for (let index = 0; index < queue.length; index += 1) {
-    const current = queue[index]!;
-    const previous = processed.get(current.path);
-    if (previous === true || (previous === false && !current.inPackage)) continue;
-    processed.set(current.path, current.inPackage);
-    const input = metafile.inputs[current.path];
-    for (const imported of input?.imports ?? []) {
-      if (imported.external) continue;
-      const original = imported.original ?? "";
-      const inPackage = current.inPackage || matchesBundledModule(original, bundledModules);
-      queue.push({ path: imported.path, inPackage });
-      const absolutePath = resolve(root, splitPathSuffix(imported.path).path);
-      const existing = dependencies.get(absolutePath);
-      if (existing !== undefined && (!inPackage || existing.virtual)) continue;
-      const stablePath = existing?.stablePath ?? "dependency/" + dependencies.size + "/" + basename(absolutePath);
-      const extension = extname(absolutePath);
-      // Custom namespaces cannot inherit package.json's type. Preserve esbuild's
-      // Node-style default-import semantics using its equivalent explicit extension.
-      // Configured loaders handle assets, not source modules; preserve their
-      // extension for emitted URLs and content-type overrides.
-      const isSource = [".js", ".jsx", ".ts", ".tsx"].includes(extension) &&
-        !configuredExtensions.some((suffix) => absolutePath.toLowerCase().endsWith(suffix));
-      const modulePath = inPackage && isSource &&
-        (await findPackageScope(dirname(absolutePath), packageScopes))?.isEsm
-        ? stablePath.slice(0, -extension.length) + (extension.startsWith(".t") ? ".mts" : ".mjs")
-        : stablePath;
-      dependencies.set(absolutePath, { stablePath, modulePath, virtual: inPackage });
+  const addDependency = (path: string) => {
+    const absolutePath = resolve(root, splitPathSuffix(path).path);
+    if (!dependencies.has(absolutePath)) {
+      dependencies.set(absolutePath, {
+        stablePath: "dependency/" + dependencies.size + "/" + basename(absolutePath),
+      });
     }
+  };
+  const queue = [entryPath];
+  const processed = new Set<string>();
+  for (let index = 0; index < queue.length; index += 1) {
+    const path = queue[index]!;
+    if (processed.has(path)) continue;
+    processed.add(path);
+    for (const imported of metafile.inputs[path]?.imports ?? []) {
+      if (imported.external) continue;
+      addDependency(imported.path);
+      queue.push(imported.path);
+    }
+  }
+  // Native glob matches have inputs but no individual import edges.
+  for (const path of Object.keys(metafile.inputs)) {
+    if (path !== entryPath) addDependency(path);
   }
   return dependencies;
 }
 
-/** The nearest package scope supplies native import aliases and module classification. */
-interface PackageScope {
-  readonly directory: string;
-  readonly isEsm: boolean;
-}
-
-/** Find the nearest package without following a linked package back to the caller's directory. */
-async function findPackageScope(
+/** Find the nearest package directory while retaining native symlink resolution. */
+async function findPackageDirectory(
   directory: string,
-  cache: Map<string, PackageScope | null>,
-): Promise<PackageScope | null> {
+  cache: Map<string, string | null>,
+): Promise<string | null> {
   const cached = cache.get(directory);
   if (cached !== undefined) return cached;
   if (basename(directory) === "node_modules") return null;
-  let scope: PackageScope | null;
+  let scope: string | null;
   try {
-    const manifest = JSON.parse((await readFile(resolve(directory, "package.json"), "utf8")).replace(/^\uFEFF/u, "")) as { type?: string };
-    scope = { directory, isEsm: manifest.type === "module" };
+    await readFile(resolve(directory, "package.json"));
+    scope = directory;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     const parent = dirname(directory);
-    scope = parent === directory ? null : await findPackageScope(parent, cache);
+    scope = parent === directory ? null : await findPackageDirectory(parent, cache);
   }
   cache.set(directory, scope);
   return scope;
-}
-
-/** Keep native package resolution while replacing emitted dependency paths with portable graph identities. */
-function createPortableDependencyPlugin(
-  dependencies: ReadonlyMap<string, PortableDependency>,
-  loaders: Readonly<Record<string, ComponentOnceAdditionalLoader>>,
-  workingDirectory: string,
-  jsx: ComponentOnceJsxMode,
-): Plugin {
-  const namespace = "componentonce-dependency";
-  const paths = new Map([...dependencies].map(([realPath, dependency]) => [dependency.modulePath, realPath]));
-  const configuredExtensions = Object.keys(loaders).sort((left, right) => right.length - left.length);
-  const sourceLoaders: Readonly<Record<string, Loader>> = {
-    ".js": "js", ".mjs": "js", ".cjs": "js", ".jsx": "jsx",
-    ".ts": "ts", ".mts": "ts", ".cts": "ts", ".tsx": "tsx",
-    ".css": "css", ".json": "json", ".txt": "text",
-  };
-  const loaderForPath = (realPath: string): Loader => {
-    const configuredExtension = configuredExtensions.find(
-      (suffix) => realPath.toLowerCase().endsWith(suffix),
-    );
-    return (configuredExtension === undefined
-      ? sourceLoaders[extname(realPath).toLowerCase()] ?? "default"
-      : loaders[configuredExtension]!) as Loader;
-  };
-  return {
-    name: "componentonce-portable-dependencies",
-    async setup(buildApi) {
-      const sourceEntries = [...dependencies].filter(([path, dependency]) =>
-        dependency.virtual && ["js", "jsx", "ts", "tsx"].includes(loaderForPath(path)),
-      );
-      const transformedSources = new Map<string, string>();
-      if (sourceEntries.length > 0) {
-        // Run one native, non-bundling transform for all package sources. Native
-        // file loading retains per-file tsconfig settings, including extends.
-        const transformed = await build({
-          ...TRUSTED_BUILD_OPTIONS,
-          // Resolve import conditions before the final bundle lowers dynamic imports.
-          supported: { "dynamic-import": true },
-          absWorkingDir: workingDirectory,
-          entryPoints: sourceEntries.map(([path, dependency]) => ({ in: path, out: dependency.modulePath })),
-          bundle: false,
-          charset: "utf8",
-          jsx,
-          legalComments: "none",
-          loader: loaders as Record<string, Loader>,
-          logLevel: "silent",
-          metafile: true,
-          outdir: resolve(workingDirectory, ".componentonce-transform"),
-          platform: "neutral",
-          sourcemap: "inline",
-          sourcesContent: true,
-          target: "es2022",
-          write: false,
-        });
-        buildApi.onStart(() => ({ warnings: transformed.warnings }));
-        for (const [path, output] of Object.entries(transformed.metafile!.outputs)) {
-          if (output.entryPoint === undefined) continue;
-          const realPath = resolve(workingDirectory, output.entryPoint);
-          const dependency = dependencies.get(realPath)!;
-          const file = findOutputFile(transformed.outputFiles!, path, workingDirectory)!;
-          transformedSources.set(realPath, makeSourceMapPortable(file.text, dependency.stablePath));
-        }
-      }
-      buildApi.onResolve({ filter: /.*/ }, async (args) => {
-        if (args.pluginData?.componentOnceResolvingPortable) return undefined;
-        const resolved = await buildApi.resolve(args.path, {
-          kind: args.kind,
-          namespace: args.namespace === namespace ? "file" : args.namespace,
-          importer: args.pluginData?.realPath ?? args.importer,
-          resolveDir: args.resolveDir,
-          with: args.with,
-          pluginData: { ...args.pluginData, componentOnceResolvingPortable: true },
-        });
-        if (resolved.errors.length > 0 || resolved.external || resolved.namespace !== "file") return resolved;
-        const dependency = dependencies.get(resolved.path);
-        if (dependency === undefined || !dependency.virtual) return resolved;
-        return { ...resolved, path: dependency.modulePath, namespace, pluginData: { realPath: resolved.path } };
-      });
-      buildApi.onLoad({ filter: /.*/, namespace }, async (args) => {
-        const realPath = paths.get(args.path)!;
-        const transformed = transformedSources.get(realPath);
-        const originalLoader = loaderForPath(realPath);
-        // TypeScript module classification lets esbuild erase type-only re-exports
-        // during linking, even after the per-file transform has removed declarations.
-        const transformedLoader = originalLoader === "ts" || originalLoader === "tsx"
-          ? originalLoader
-          : jsx === "preserve" ? "jsx" : "js";
-        return {
-          contents: transformed ?? await readFile(realPath),
-          loader: transformed === undefined ? originalLoader : transformedLoader,
-          resolveDir: dirname(realPath),
-          watchFiles: [realPath],
-          pluginData: { realPath },
-        };
-      });
-    },
-  };
-}
-
-/** Retain native transform mappings without persisting machine-specific input locations. */
-function makeSourceMapPortable(code: string, stablePath: string): string {
-  return code.replace(
-    /\n\/\/# sourceMappingURL=data:application\/json;base64,([A-Za-z0-9+/=]+)\s*$/u,
-    (_comment, encoded: string) => {
-      const sourceMap = JSON.parse(Buffer.from(encoded, "base64").toString("utf8")) as {
-        sources: string[]; sourceRoot?: string; file?: string;
-      };
-      sourceMap.sources = sourceMap.sources.map((source, index) =>
-        "componentonce-source:" + stablePath + "/" + index + "/" + basename(source.replace(/\\/gu, "/")),
-      );
-      delete sourceMap.sourceRoot;
-      delete sourceMap.file;
-      return "\n//# sourceMappingURL=data:application/json;base64," +
-        Buffer.from(JSON.stringify(sourceMap)).toString("base64") + "\n";
-    },
-  );
 }
 
 function updateNamespacedHash(
@@ -938,7 +778,7 @@ function createCssModuleNamespacePlugin(
   compilationNamespace: string,
   workingDirectory: string,
   bundledModules: ReadonlySet<string>,
-  dependencies: ReadonlyMap<string, PortableDependency>,
+  dependencies: ReadonlyMap<string, DependencyIdentity>,
   loaders: Readonly<Record<string, ComponentOnceAdditionalLoader>>,
 ): Plugin {
   const namespace = "componentonce-local-css";
@@ -992,8 +832,10 @@ function createCssModuleNamespacePlugin(
             with: args.with,
             pluginData: { ...args.pluginData, componentOnceResolvingPackage: true },
           });
-          if (resolved.errors.length > 0 || resolved.external ||
-              !isLocalCssFile(resolved.path)) return resolved;
+          if (resolved.errors.length > 0 || resolved.external) return resolved;
+          // JS fallthrough preserves native per-file tsconfig context. CSS
+          // references must leave the custom CSS namespace through a file path.
+          if (!isLocalCssFile(resolved.path)) return isCssReferenceKind(args.kind) ? resolved : undefined;
           return {
             ...await resolveModule(resolved.pluginData?.realPath ?? resolved.path, args.resolveDir, resolved.suffix),
             warnings: resolved.warnings,
@@ -1042,7 +884,8 @@ function createHostExternalPlugin(
   return {
     name: "componentonce-host-externals",
     setup(buildApi) {
-      const packageScopes = new Map<string, PackageScope | null>();
+      const packageScopes = new Map<string, string | null>();
+      buildApi.onStart(() => { packageScopes.clear(); });
       buildApi.onResolve({ filter: /.*/ }, async (args) => {
         if (args.pluginData?.componentOnceResolvingPrivate) return undefined;
         if (isCssReferenceKind(args.kind)) {
@@ -1072,10 +915,10 @@ function createHostExternalPlugin(
             pluginData: { ...args.pluginData, componentOnceResolvingPrivate: true },
           });
           if (resolved.errors.length > 0) return resolved;
-          const scope = await findPackageScope(args.resolveDir, packageScopes);
+          const scope = await findPackageDirectory(args.resolveDir, packageScopes);
           if (scope !== null && resolved.namespace === "file" && !resolved.external) {
-            const targetScope = await findPackageScope(dirname(resolved.path), packageScopes);
-            if (targetScope?.directory === scope.directory) return resolved;
+            const targetScope = await findPackageDirectory(dirname(resolved.path), packageScopes);
+            if (targetScope === scope) return undefined;
           }
         }
         return {

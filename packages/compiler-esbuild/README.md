@@ -150,7 +150,7 @@ Preparation verifies the executable bundle and every embedded asset before produ
 
 The v2 package has sorted `assets` entries with safe relative `path`, `contentType`, exact byte length, SHA-256/SRI values, and base64 bytes. `stylesheets` contains exact references into that table. Generated `componentonce-asset:` tokens are the only strings the runtime resolves. Node tooling may instantiate with only `{ externals }` for manifest/build inspection; file imports remain deliberate tokens until a URL resolver is supplied. Existing v1 packages without assets remain readable and executable.
 
-Plain `.css` is global CSS. It is not automatically isolated. Prefer `.module.css` for scoped class names; ComponentOnce adds a deterministic namespace derived from the portable input/dependency graph, so changing a referenced image, font, or imported style also changes local class names while identical packages in different absolute directories remain reproducible. A host may instead mount styles in a `ShadowRoot`, but Shadow DOM is never forced.
+Plain `.css` is global CSS. It is not automatically isolated. Prefer `.module.css` for scoped class names; ComponentOnce adds a deterministic namespace derived from the portable input/dependency graph, so changing a referenced image, font, or imported style also changes local class names while identical static dependency graphs retain those class names across directories. A host may instead mount styles in a `ShadowRoot`, but Shadow DOM is never forced.
 
 Build output is independent of the process working directory. Absolute `sourceFileName` values are reduced to their basename, and build-machine paths are not persisted in bundle comments, source maps, or metafile data.
 
@@ -191,18 +191,22 @@ Package-private `#imports` that resolve within their package are followed like
 relative files, including native patterns and conditions. Aliases to other
 packages still need an explicit bundle or host-external choice for that alias.
 Selected CSS package imports also resolve through the package; CSS Modules retain
-the compilation namespace, including direct package subpaths. Dependency identities
-come from the import graph, so statically resolved linked package imports retain
-their CSS class names and artifact hashes across target locations. Native
-glob-style imports, such as `import("./locales/" + name + ".js")`, use esbuild's
-file identities so static and glob imports share the same module instance. These
-builds can have different artifact hashes across linked package target locations.
+the compilation namespace, including direct package subpaths. CSS class names use
+graph-based dependency identities and source contents, so statically resolved
+imports retain their class names across linked package target locations.
+
+JavaScript dependencies retain esbuild's native file identities and per-file
+tsconfig behavior, including inherited JSX factories, class-field settings, and
+`verbatimModuleSyntax`. Static and glob imports share native module instances.
+Source maps and global CSS can contain installation paths, so bundle and stylesheet
+hashes may change across installations. Repeated builds with the same sources,
+settings, and layout remain deterministic; integrity hashes identify emitted
+bytes, not an installation-independent build cache key. Package resolution follows
+real package locations, including unhoisted transitive dependencies.
+
 For CSS Modules, glob JavaScript entries that import their CSS; direct CSS globs
-bypass content-based class isolation. Package resolution follows real package
-locations, including unhoisted transitive dependencies in package-manager stores.
-Linked TypeScript/JSX sources retain their per-file tsconfig transformations,
-including inherited JSX factories and class-field settings. Original sources stay
-available in portable source maps.
+bypass content-based class isolation. Original sources stay
+available in inline source maps.
 
 Trusted artifacts replace `process.env.NODE_ENV` with `"production"` at compile
 time, regardless of the build machine's environment. This does not inject other
