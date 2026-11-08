@@ -819,7 +819,8 @@ function createCssModuleNamespacePlugin(
         if (args.pluginData?.componentOnceResolvingPackage) return undefined;
         const reference = splitPathSuffix(args.path);
         if (matchesBundledModule(reference.path, bundledModules) ||
-            ((reference.path.startsWith(".") || args.path.startsWith("#")) && !isCssReferenceKind(args.kind))) {
+            (reference.path.startsWith(".") && !isCssReferenceKind(args.kind)) ||
+            (args.path.startsWith("#") && args.kind !== "url-token")) {
           // Native resolution supplies both package aliases and extensionless relative filenames.
           const resolved = await buildApi.resolve(args.path, {
             kind: args.kind,
@@ -908,7 +909,8 @@ function createHostExternalPlugin(
       buildApi.onEnd(disposePrivateResolver);
       buildApi.onDispose(() => { void disposePrivateResolver(); });
       buildApi.onResolve({ filter: /.*/ }, async (args) => {
-        if (isCssReferenceKind(args.kind)) {
+        if (isCssReferenceKind(args.kind) &&
+            !(args.path.startsWith("#") && args.kind !== "url-token")) {
           const reference = splitPathSuffix(args.path);
           if (!isNonFileCssPath(reference.path) &&
               matchesBundledModule(reference.path, bundledModules)) return undefined;
@@ -935,7 +937,9 @@ function createHostExternalPlugin(
             resolveDir: args.resolveDir,
             with: args.with,
           });
-          if (resolved.errors.length > 0) return resolved;
+          // Let the outer resolver report failures and track missing candidates
+          // so creating a private target also wakes an active watcher.
+          if (resolved.errors.length > 0) return undefined;
           if (resolved.namespace === "file" && !resolved.external) return undefined;
         }
         return {

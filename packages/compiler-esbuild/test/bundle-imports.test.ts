@@ -497,11 +497,15 @@ it("preserves bundled dynamic import expressions that esbuild can resolve", asyn
   });
 });
 
-it("renders React aliases supplied through the host external map", async () => {
+it.each([
+  ["react-private", "react-private/jsx-runtime"],
+  ["react?copy", "react/jsx-runtime?copy"],
+  ["react#copy", "react/jsx-runtime#copy"],
+])("renders React alias %s supplied through the host external map", async (reactSpecifier, jsxSpecifier) => {
   const artifact = await compileTrustedReactModule({
     source: `
-      import { useState } from "react-private";
-      import { jsx } from "react-private/jsx-runtime";
+      import { useState } from ${JSON.stringify(reactSpecifier)};
+      import { jsx } from ${JSON.stringify(jsxSpecifier)};
       export const hook = useState;
       export const View = () => {
         const [value] = useState("alias rendered");
@@ -509,18 +513,18 @@ it("renders React aliases supplied through the host external map", async () => {
       };
     `,
     sourceFileName: "entry.ts",
-    additionalExternalModules: ["react-private", "react-private/jsx-runtime"],
+    additionalExternalModules: [reactSpecifier, jsxSpecifier],
   });
   const loaded = instantiateTrustedBundle<{
     hook: typeof React.useState;
     View: React.ComponentType;
   }>(artifact, {
     externals: {
-      "react-private": React,
-      "react-private/jsx-runtime": jsxRuntime,
+      [reactSpecifier]: React,
+      [jsxSpecifier]: jsxRuntime,
     },
   });
-  expect(artifact.externalModules).toEqual(["react-private", "react-private/jsx-runtime"]);
+  expect(artifact.externalModules).toEqual([reactSpecifier, jsxSpecifier].sort());
   expect(loaded.hook).toBe(React.useState);
   expect(renderToStaticMarkup(React.createElement(loaded.View)))
     .toBe("<strong>alias rendered</strong>");
@@ -744,6 +748,36 @@ it.each(["?variant=small", "#theme"])("bundles selected CSS subpaths with the %s
     const styles = { root: "host-owned" };
     expect(external.externalModules).toEqual([specifier]);
     expect(instantiateTrustedBundle<{ styles: object }>(external, { externals: { [specifier]: styles } }).styles).toBe(styles);
+  });
+});
+
+it("bundles package-private CSS imports and compositions while retaining URL fragments", async () => {
+  await withPackageFixture(async (root) => {
+    const helper = join(root, "node_modules", "@fixture", "helper");
+    await writeFile(join(helper, "package.json"), JSON.stringify({
+      name: "@fixture/helper", type: "module", exports: "./index.js",
+      imports: { "#theme": "./theme.css", "#base": "./base.module.css" },
+    }));
+    await writeFile(join(helper, "index.js"),
+      'import "./global.css"; import styles from "./card.module.css"; export { styles };');
+    await writeFile(join(helper, "global.css"), '@import "#theme"; .global { display: block; }');
+    await writeFile(join(helper, "theme.css"), ".theme { color: red; }");
+    await writeFile(join(helper, "base.module.css"), ".base { font-weight: bold; }");
+    await writeFile(join(helper, "card.module.css"),
+      '.root { composes: base from "#base"; color: blue; filter: url("#icon"); }');
+    const artifact = await compileTrustedModule({
+      source: 'export { styles } from "@fixture/helper";',
+      sourceFileName: "entry.ts", resolveDir: root, bundleModules: ["@fixture/helper"],
+    });
+    const loaded = instantiateTrustedBundle<{ styles: { root: string } }>(artifact, { externals: {} });
+    const css = Buffer.from(artifact.assets.find((asset) => asset.path === "component.css")!.content, "base64").toString("utf8");
+    expect(css).toContain(".theme");
+    expect(css).toContain("color: red");
+    expect(css).toContain("color: blue");
+    expect(css).toContain("font-weight: bold");
+    expect(css).toContain("url(#icon)");
+    expect(loaded.styles.root.split(" ")).toHaveLength(2);
+    for (const className of loaded.styles.root.split(" ")) expect(css).toContain("." + className);
   });
 });
 

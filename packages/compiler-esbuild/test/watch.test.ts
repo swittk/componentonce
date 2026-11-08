@@ -146,14 +146,50 @@ it("refreshes private import scopes when a nested package manifest changes", asy
   try {
     await until(() => results.some((result) => result.ok));
     expect(latestLabel()).toBe("nested");
+    let count = results.length;
     await rm(join(nested, "package.json"));
-    await watcher.rebuild();
+    await until(() => results.length > count && results.at(-1)?.ok === true);
     expect(latestLabel()).toBe("ancestor");
+    count = results.length;
     await writeFile(join(nested, "package.json"), manifest);
-    await watcher.rebuild();
+    await until(() => results.length > count && results.at(-1)?.ok === true);
     expect(latestLabel()).toBe("nested");
   } finally {
     await watcher.dispose();
     await rm(dir, { recursive: true, force: true });
   }
 }, 20000);
+
+
+it("automatically recovers when a missing private import target is created", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "componentonce-watch-private-missing-"));
+  const entry = join(dir, "entry.ts");
+  const target = join(dir, "local.js");
+  await writeFile(join(dir, "package.json"), JSON.stringify({
+    type: "module", imports: { "#local": "./local.js" },
+  }));
+  await writeFile(entry, 'export { value } from "#local";');
+  const results: ComponentOnceWatchResult[] = [];
+  const watcher = await watchTrustedModuleFile({
+    entry,
+    onBuild(result) { results.push(result); },
+  });
+  try {
+    await until(() => results.length > 0);
+    expect(results.at(-1)?.ok).toBe(false);
+    for (const value of ["first", "recreated"]) {
+      const count = results.length;
+      await writeFile(target, 'export const value = ' + JSON.stringify(value) + ';');
+      await until(() => results.length > count && results.at(-1)?.ok === true);
+      const result = results.at(-1);
+      if (!result?.ok) throw new Error("Expected a successful rebuild.");
+      expect(instantiateTrustedBundle<{ value: string }>(result.artifact, { externals: {} }).value).toBe(value);
+      const successfulCount = results.length;
+      await rm(target);
+      await until(() => results.length > successfulCount && results.at(-1)?.ok === false);
+    }
+  } finally {
+    await watcher.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30000);
