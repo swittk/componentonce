@@ -317,7 +317,11 @@ export async function compileTrustedModule(
       platform: "neutral",
       mainFields: PACKAGE_MAIN_FIELDS,
       plugins: [
-        createPortableDependencyPlugin(compilation.dependencies, loaders, workingDirectory, input.jsx ?? "transform"),
+        // Glob matches bypass onResolve. Keep native dependency identities
+        // so static and glob imports share the same module instance.
+        ...(compilation.hasGlobImports ? [] : [
+          createPortableDependencyPlugin(compilation.dependencies, loaders, workingDirectory, input.jsx ?? "transform"),
+        ]),
         createCssModuleNamespacePlugin(
           compilation.namespace, workingDirectory, bundledModules, compilation.dependencies, loaders,
         ),
@@ -650,7 +654,11 @@ interface CompilationNamespaceInput {
 /** Hash reachable source contents under portable dependency identities for CSS isolation. */
 async function calculateCompilationNamespace(
   input: CompilationNamespaceInput,
-): Promise<{ readonly namespace: string; readonly dependencies: ReadonlyMap<string, PortableDependency> }> {
+): Promise<{
+  readonly namespace: string;
+  readonly dependencies: ReadonlyMap<string, PortableDependency>;
+  readonly hasGlobImports: boolean;
+}> {
   const root = resolve(input.resolveDir ?? process.cwd());
   const result = await build({
     ...TRUSTED_BUILD_OPTIONS,
@@ -691,13 +699,31 @@ async function calculateCompilationNamespace(
     ]);
   }
 
-  const dependencies = await collectPortableDependencies(result.metafile, root, input.sourceFileName, input.bundledModules);
+  // esbuild records native import()/require() globs as synthetic external
+  // import-statement edges; their matched files appear only in inputs.
+  const hasGlobImports = Object.values(result.metafile.inputs).some((source) =>
+    source.imports.some((imported) =>
+      imported.external && imported.kind === "import-statement" &&
+      imported.path.startsWith(".") && imported.path.includes("*") &&
+      !input.allowedExternals.has(imported.path),
+    ),
+  );
+  const dependencies = new Map(await collectPortableDependencies(result.metafile, root, input.sourceFileName, input.bundledModules));
+  if (hasGlobImports) {
+    const entryPath = resolve(root, input.sourceFileName);
+    for (const path of Object.keys(result.metafile.inputs)) {
+      const absolutePath = resolve(root, splitPathSuffix(path).path);
+      if (path === "<stdin>" || absolutePath === entryPath || dependencies.has(absolutePath)) continue;
+      const stablePath = "dependency/" + dependencies.size + "/" + basename(absolutePath);
+      dependencies.set(absolutePath, { stablePath, modulePath: stablePath, virtual: false });
+    }
+  }
   const hash = createHash("sha256");
   updateNamespacedHash(hash, "entry/" + basename(input.sourceFileName), Buffer.from(input.source));
   for (const [absolutePath, dependency] of dependencies) {
     updateNamespacedHash(hash, dependency.stablePath, await readFile(absolutePath));
   }
-  return { namespace: hash.digest("hex").slice(0, 16), dependencies };
+  return { namespace: hash.digest("hex").slice(0, 16), dependencies, hasGlobImports };
 }
 
 /** Physical inputs retain their resolver context but expose graph-based artifact identities. */
@@ -1024,7 +1050,8 @@ function createHostExternalPlugin(
                 "Import " +
                 JSON.stringify(args.path) +
                 " is neither a bundled implementation module nor an allowed host external. " +
-                "Add its package specifier to bundleModules, or to externalModules when the host owns it.",
+                "Add its package specifier to bundleModules (additionalBundleModules for React helpers), " +
+                "or its exact specifier to externalModules (additionalExternalModules for React helpers) when the host owns it.",
             },
           ],
         };

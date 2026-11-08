@@ -189,8 +189,13 @@ all of its dependencies. Package subpaths are included, but similarly named pack
 are not. Packages without an exports map resolve their `module` field before `main`.
 Selected CSS package imports also resolve through the package; CSS Modules retain
 the compilation namespace, including direct package subpaths. Dependency identities
-come from the import graph, so linked package target locations do not change CSS
-class names or artifact hashes. Package resolution still follows real package
+come from the import graph, so statically resolved linked package imports retain
+their CSS class names and artifact hashes across target locations. Native
+glob-style imports, such as `import("./locales/" + name + ".js")`, use esbuild's
+file identities so static and glob imports share the same module instance. These
+builds can have different artifact hashes across linked package target locations.
+For CSS Modules, glob JavaScript entries that import their CSS; direct CSS globs
+bypass content-based class isolation. Package resolution follows real package
 locations, including unhoisted transitive dependencies in package-manager stores.
 Linked TypeScript/JSX sources retain their per-file tsconfig transformations,
 including inherited JSX factories and class-field settings. Original sources stay

@@ -515,3 +515,117 @@ it("renders React aliases supplied through the host external map", async () => {
   expect(renderToStaticMarkup(React.createElement(loaded.View)))
     .toBe("<strong>alias rendered</strong>");
 });
+
+it.each([
+  ["store-a", 'import("./locales/" + name + ".js")'],
+  ["other-store/nested", 'import(`./locales/${name}.js`)'],
+  ["store-a", 'require("./locales/" + name + ".js")'],
+])("shares static and glob module instances in a linked package (%s, %s)", async (targetDirectory, expression) => {
+  await withPackageFixture(async (root) => {
+    const helper = join(root, "node_modules", "@fixture", "helper");
+    await writeFile(join(helper, "index.js"), `
+      import { state } from "./locales/en.js";
+      export const direct = state;
+      export const load = (name) => ${expression};
+    `);
+    await mkdir(join(helper, "locales"));
+    for (const locale of ["en", "th"]) {
+      await writeFile(join(helper, "locales", locale + ".js"),
+        "export const state = { label: " + JSON.stringify(locale) + " };");
+    }
+    const target = join(root, targetDirectory, "helper");
+    await mkdir(join(root, targetDirectory), { recursive: true });
+    await rename(helper, target);
+    await symlink(target, helper, "dir");
+    const artifact = await compileTrustedModule({
+      source: 'export { direct, load } from "@fixture/helper";',
+      sourceFileName: "entry.ts",
+      resolveDir: root,
+      bundleModules: ["@fixture/helper"],
+    });
+    type State = { label: string };
+    const loaded = instantiateTrustedBundle<{
+      direct: State;
+      load(name: string): { state: State } | Promise<{ state: State }>;
+    }>(artifact, { externals: {} });
+    expect(artifact.externalModules).toEqual([]);
+    expect((await loaded.load("en")).state).toBe(loaded.direct);
+    expect((await loaded.load("en")).state.label).toBe("en");
+    expect((await loaded.load("th")).state.label).toBe("th");
+    expect((await loaded.load("th")).state).toBe((await loaded.load("th")).state);
+  });
+});
+
+it("resolves unhoisted dependencies and package-type interop inside linked glob imports", async () => {
+  await withPackageFixture(async (root) => {
+    const formatter = join(root, "node_modules", "@fixture", "formatter");
+    const helper = join(root, "node_modules", "@fixture", "helper");
+    const store = join(root, "isolated-store", "node_modules", "@fixture");
+    await mkdir(store, { recursive: true });
+    await mkdir(join(formatter, "locales"));
+    await writeFile(join(formatter, "format.js"),
+      'export const load = (name) => import("./locales/" + name + ".js");');
+    await writeFile(join(formatter, "locales", "en.js"), `
+      import host from "host-sdk";
+      import { wrap } from "@fixture/helper";
+      export const value = wrap(host.value);
+    `);
+    await rename(formatter, join(store, "formatter"));
+    await rename(helper, join(store, "helper"));
+    await symlink(join(store, "formatter"), formatter, "dir");
+    const artifact = await compileTrustedModule({
+      source: 'export { load } from "@fixture/formatter";',
+      sourceFileName: "entry.ts", resolveDir: root,
+      bundleModules: ["@fixture/formatter", "@fixture/helper"], externalModules: ["host-sdk"],
+    });
+    const host = { __esModule: true, value: "host", default: { value: "wrong interop" } };
+    const loaded = instantiateTrustedBundle<{
+      load(name: string): Promise<{ value: string }>;
+    }>(artifact, { externals: { "host-sdk": host } });
+    expect((await loaded.load("en")).value).toBe("[host]");
+  });
+});
+
+it("shares CSS imports across glob modules and includes glob-only content in CSS isolation", async () => {
+  await withPackageFixture(async (root) => {
+    const helper = join(root, "node_modules", "@fixture", "helper");
+    await mkdir(join(helper, "locales"));
+    await writeFile(join(helper, "index.js"), `
+      import styles from "./card.module.css";
+      export { styles };
+      export const load = (name) => import("./locales/" + name + ".js");
+    `);
+    await writeFile(join(helper, "card.module.css"), ".root { color: red; }");
+    const compile = async (label: string) => {
+      await writeFile(join(helper, "locales", "en.js"), `
+        import styles from "../card.module.css";
+        export { styles };
+        export const label = ${JSON.stringify(label)};
+      `);
+      const artifact = await compileTrustedModule({
+        source: 'export { styles, load } from "@fixture/helper";',
+        sourceFileName: "entry.ts", resolveDir: root,
+        bundleModules: ["@fixture/helper"],
+      });
+      const loaded = instantiateTrustedBundle<{
+        styles: { root: string };
+        load(name: string): Promise<{ styles: { root: string }; label: string }>;
+      }>(artifact, { externals: {} });
+      const locale = await loaded.load("en");
+      expect(locale.styles).toBe(loaded.styles);
+      expect(locale.label).toBe(label);
+      const css = Buffer.from(artifact.assets.find((asset) => asset.path === "component.css")!.content, "base64").toString("utf8");
+      expect(css).toContain("." + loaded.styles.root);
+      expect(css).toContain("color: red");
+      return loaded.styles.root;
+    };
+    expect(await compile("first")).not.toBe(await compile("second"));
+  });
+});
+
+it("names the React import-ownership options in undeclared import diagnostics", async () => {
+  await expect(compileTrustedReactModule({
+    source: 'export { value } from "not-selected";',
+    sourceFileName: "entry.ts",
+  })).rejects.toThrow(/additionalBundleModules.*additionalExternalModules/u);
+});
