@@ -219,6 +219,12 @@ Use statically resolvable imports for implementation dependencies that must trav
 inside the artifact. The artifact's external-module list describes statically
 discovered imports, not all names a dynamic lookup might request.
 
+Unresolved variable imports inherit esbuild's CommonJS lowering: the import
+argument is evaluated in a later Promise callback, rather than immediately as
+with native `import()`. If an argument reads mutable state or has side effects,
+capture its string value first, for example `const specifier = selectedName;`
+then `const pending = import(specifier);`, before changing `selectedName`.
+
 The React helpers keep React and its JSX runtimes host-owned automatically. The
 build and dev CLIs also externalize the ComponentOnce React adapter. Programmatic
 callers choose adapter ownership through their external module options. Unknown

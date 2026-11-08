@@ -138,6 +138,10 @@ it.each(["test", "react"])("bundles both required packages from repeated --bundl
     );
 
     await expect(runComponentOnceCli([
+      "build", entry, "--renderer", renderer, "--bundle",
+    ])).rejects.toThrow("--bundle requires a value.");
+
+    await expect(runComponentOnceCli([
       "build", entry, "--renderer", renderer,
       "--bundle", "fixture-cli-bundle", "--out", out,
     ])).rejects.toThrow('Import "fixture-cli-helper" is neither a bundled implementation module nor an allowed host external.');

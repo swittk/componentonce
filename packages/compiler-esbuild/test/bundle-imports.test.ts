@@ -482,6 +482,43 @@ it.each(["entry", "bundled package"])("loads nonliteral dynamic imports from the
   });
 });
 
+it.each(["entry", "bundled package"])("keeps a captured dynamic import name stable after selection changes in %s", async (importer) => {
+  await withPackageFixture(async (root) => {
+    const source = `
+      export const events = [];
+      export function load() {
+        let selected = "host-first";
+        const specifier = (events.push("selected"), selected);
+        const pending = import(specifier);
+        selected = "host-second";
+        return pending;
+      }
+    `;
+    if (importer === "bundled package") {
+      await writeFile(join(root, "node_modules", "@fixture", "helper", "index.js"), source);
+    }
+    const artifact = await compileTrustedModule({
+      source: importer === "entry" ? source : 'export { events, load } from "@fixture/helper";',
+      sourceFileName: "entry.ts", resolveDir: root,
+      bundleModules: ["@fixture/helper"],
+      externalModules: ["host-first", "host-second"],
+    });
+    const loaded = instantiateTrustedBundle<{
+      events: string[];
+      load(): Promise<{ value: string }>;
+    }>(artifact, {
+      externals: {
+        "host-first": { value: "first" },
+        "host-second": { value: "second" },
+      },
+    });
+    const pending = loaded.load();
+    expect(loaded.events).toEqual(["selected"]);
+    expect(pending).toBeInstanceOf(Promise);
+    expect((await pending).value).toBe("first");
+  });
+});
+
 it("preserves bundled dynamic import expressions that esbuild can resolve", async () => {
   await withPackageFixture(async (root) => {
     await writeFile(join(root, "first.js"), 'export const value = "first";');
