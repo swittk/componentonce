@@ -655,6 +655,7 @@ async function calculateCompilationNamespace(
   readonly dependencies: ReadonlyMap<string, DependencyIdentity>;
 }> {
   const root = resolve(input.resolveDir ?? process.cwd());
+  const loadedPaths = new Map<string, string>();
   const result = await build({
     ...TRUSTED_BUILD_OPTIONS,
     absWorkingDir: root,
@@ -676,6 +677,17 @@ async function calculateCompilationNamespace(
         input.allowedExternals,
         input.bundledModules,
       ),
+      {
+        name: "componentonce-native-dependency-paths",
+        setup(api) {
+          api.onLoad({ filter: /.*/, namespace: "file" }, (args) => {
+            // Metafile keys append suffixes without distinguishing literal #/?
+            // filename characters. Observe native paths without changing loads.
+            loadedPaths.set(args.path + args.suffix, args.path);
+            return undefined;
+          });
+        },
+      },
     ],
     publicPath: COMPONENTONCE_ASSET_URL_PREFIX,
     stdin: {
@@ -694,7 +706,7 @@ async function calculateCompilationNamespace(
     ]);
   }
 
-  const dependencies = collectDependencyIdentities(result.metafile, root, input.sourceFileName);
+  const dependencies = collectDependencyIdentities(result.metafile, root, input.sourceFileName, loadedPaths);
   const hash = createHash("sha256");
   updateNamespacedHash(hash, "entry/" + basename(input.sourceFileName), Buffer.from(input.source));
   for (const [absolutePath, dependency] of dependencies) {
@@ -713,12 +725,14 @@ function collectDependencyIdentities(
   metafile: Metafile,
   root: string,
   sourceFileName: string,
+  loadedPaths: ReadonlyMap<string, string>,
 ): ReadonlyMap<string, DependencyIdentity> {
   const dependencies = new Map<string, DependencyIdentity>();
   const normalizedEntry = relative(root, resolve(root, sourceFileName)).replace(/\\/gu, "/");
   const entryPath = metafile.inputs[normalizedEntry] === undefined ? "<stdin>" : normalizedEntry;
   const addDependency = (path: string) => {
-    const absolutePath = resolve(root, splitPathSuffix(path).path);
+    const metadataPath = resolve(root, path);
+    const absolutePath = loadedPaths.get(metadataPath) ?? metadataPath;
     if (!dependencies.has(absolutePath)) {
       dependencies.set(absolutePath, {
         stablePath: "dependency/" + dependencies.size + "/" + basename(absolutePath),

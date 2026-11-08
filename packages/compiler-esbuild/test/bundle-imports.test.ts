@@ -723,6 +723,32 @@ it.each([".js", ".worker.js"])("preserves bundled worker asset extensions with t
   });
 });
 
+it.each(process.platform === "win32"
+  ? ["implementation#v1.js"]
+  : ["implementation#v1.js", "implementation?v1.js"]
+)("hashes the native dependency file %s", async (fileName) => {
+  await withPackageFixture(async (root) => {
+    const helper = join(root, "node_modules", "@fixture", "helper");
+    await writeFile(join(helper, "index.js"),
+      'export { value } from ' + JSON.stringify("./" + fileName) +
+      '; import styles from "./card.module.css"; export { styles };');
+    await writeFile(join(helper, "card.module.css"), ".root { color: red; }");
+    const compile = async (value: string) => {
+      await writeFile(join(helper, fileName), 'export const value = ' + JSON.stringify(value) + ';');
+      const artifact = await compileTrustedModule({
+        source: 'export { value, styles } from "@fixture/helper";',
+        sourceFileName: "entry.ts", resolveDir: root, bundleModules: ["@fixture/helper"],
+      });
+      const loaded = instantiateTrustedBundle<{ value: string; styles: { root: string } }>(artifact, { externals: {} });
+      expect(loaded.value).toBe(value);
+      const css = Buffer.from(artifact.assets.find((asset) => asset.path === "component.css")!.content, "base64").toString("utf8");
+      expect(css).toContain("." + loaded.styles.root);
+      return loaded.styles.root;
+    };
+    expect(await compile("first")).not.toBe(await compile("changed"));
+  });
+});
+
 it.each(["?variant=small", "#theme"])("bundles selected CSS subpaths with the %s suffix", async (suffix) => {
   await withPackageFixture(async (root) => {
     const helper = join(root, "node_modules", "@fixture", "helper");
