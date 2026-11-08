@@ -199,7 +199,13 @@ available in portable source maps.
 Trusted artifacts replace `process.env.NODE_ENV` with `"production"` at compile
 time, regardless of the build machine's environment. This does not inject other
 Node globals. Dynamic imports of declared host externals use the same injected
-host modules as static imports and retain their asynchronous result.
+host modules as static imports and retain their asynchronous result. Imports whose
+names cannot be resolved statically, such as `import(specifier)`, remain runtime
+lookups in the injected host module map. Selecting a package with `--bundle` does
+not include code that is referenced only through an unresolved variable import.
+Use statically resolvable imports for implementation dependencies that must travel
+inside the artifact. The artifact's external-module list describes statically
+discovered imports, not all names a dynamic lookup might request.
 
 The React helpers keep React and its JSX runtimes host-owned automatically. The
 build and dev CLIs also externalize the ComponentOnce React adapter. Programmatic
@@ -207,6 +213,13 @@ callers choose adapter ownership through their external module options. Unknown
 bare package imports still fail. This keeps
 host singletons deliberate without turning reusable implementation libraries
 into host ABI.
+
+React aliases use the same explicit ownership rule. Declare aliases such as
+`react-private` and `react-private/jsx-runtime` in `additionalExternalModules`,
+then supply the host's React and JSX runtime objects under those exact keys in
+the loader's `externals` map. Do not select those aliases for bundling when the
+component is rendered by the host React instance: bundling them embeds a separate
+React copy whose hooks do not share the host renderer's state.
 
 Programmatic callers use `bundleModules` with `compileTrustedModule` and
 `additionalBundleModules` with `compileTrustedReactModule` / `buildTrustedReactPackage`.

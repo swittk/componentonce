@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { createServer, request } from "node:http";
 import { expect, it } from "vitest";
 import { createComponentOnceDevServer } from "../dist/index.js";
+import { instantiateTrustedBundle, type ComponentOnceTrustedBundleArtifact } from "@componentonce/compiler-esbuild";
 
 interface ServerState {
   source: { ok: boolean; revision: number; diagnostics: readonly { text: string }[] };
@@ -114,12 +115,15 @@ it("serves artifacts that bundle explicitly allowed bare implementation packages
     const artifact = (await (
       await fetch(server.url + "/artifact")
     ).json()) as {
-      artifact: { externalModules: readonly string[]; code: string };
+      artifact: ComponentOnceTrustedBundleArtifact;
     };
     expect(artifact.artifact.externalModules).not.toContain(
       "fixture-dev-bundle",
     );
-    expect(artifact.artifact.code).toContain("test/dev-bundled");
+    const loaded = instantiateTrustedBundle<{
+      definition: { manifest: { id: string } };
+    }>(artifact.artifact, { externals: {} });
+    expect(loaded.definition.manifest.id).toBe("test/dev-bundled");
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

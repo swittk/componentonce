@@ -448,3 +448,70 @@ it.each(["Shape", "Shape as PublicShape"])("preserves erased TypeScript re-expor
     expect(Object.keys(loaded)).toEqual(["value"]);
   });
 });
+
+it.each(["entry", "bundled package"])("loads nonliteral dynamic imports from the host map in %s", async (importer) => {
+  await withPackageFixture(async (root) => {
+    const source = "export const load = (specifier) => import(specifier);";
+    if (importer === "bundled package") {
+      await writeFile(join(root, "node_modules", "@fixture", "helper", "index.js"), source);
+    }
+    const artifact = await compileTrustedModule({
+      source: importer === "entry" ? source : 'export { load } from "@fixture/helper";',
+      sourceFileName: "entry.ts",
+      resolveDir: root,
+      bundleModules: ["@fixture/helper"],
+      externalModules: ["host-sdk"],
+    });
+    const marker = {};
+    const loaded = instantiateTrustedBundle<{
+      load(specifier: string): Promise<{ value: unknown }>;
+    }>(artifact, { externals: { "host-sdk": { value: marker } } });
+    const pending = loaded.load("host-sdk");
+    expect(pending).toBeInstanceOf(Promise);
+    expect((await pending).value).toBe(marker);
+  });
+});
+
+it("preserves bundled dynamic import expressions that esbuild can resolve", async () => {
+  await withPackageFixture(async (root) => {
+    await writeFile(join(root, "first.js"), 'export const value = "first";');
+    await writeFile(join(root, "second.js"), 'export const value = "second";');
+    const artifact = await compileTrustedModule({
+      source: 'export const load = (first) => first ? import("./first.js") : import("./second.js");',
+      sourceFileName: "entry.ts",
+      resolveDir: root,
+    });
+    const loaded = instantiateTrustedBundle<{ load(first: boolean): Promise<{ value: string }> }>(artifact, { externals: {} });
+    expect((await loaded.load(true)).value).toBe("first");
+    expect((await loaded.load(false)).value).toBe("second");
+  });
+});
+
+it("renders React aliases supplied through the host external map", async () => {
+  const artifact = await compileTrustedReactModule({
+    source: `
+      import { useState } from "react-private";
+      import { jsx } from "react-private/jsx-runtime";
+      export const hook = useState;
+      export const View = () => {
+        const [value] = useState("alias rendered");
+        return jsx("strong", { children: value });
+      };
+    `,
+    sourceFileName: "entry.ts",
+    additionalExternalModules: ["react-private", "react-private/jsx-runtime"],
+  });
+  const loaded = instantiateTrustedBundle<{
+    hook: typeof React.useState;
+    View: React.ComponentType;
+  }>(artifact, {
+    externals: {
+      "react-private": React,
+      "react-private/jsx-runtime": jsxRuntime,
+    },
+  });
+  expect(artifact.externalModules).toEqual(["react-private", "react-private/jsx-runtime"]);
+  expect(loaded.hook).toBe(React.useState);
+  expect(renderToStaticMarkup(React.createElement(loaded.View)))
+    .toBe("<strong>alias rendered</strong>");
+});

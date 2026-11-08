@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { expect, it } from "vitest";
-import { compileTrustedModule, watchTrustedModuleFile, type ComponentOnceWatchResult } from "../src/index.js";
+import { compileTrustedModule, instantiateTrustedBundle, watchTrustedModuleFile, type ComponentOnceWatchResult } from "../src/index.js";
 
 async function until(predicate: () => boolean) {
   const end = Date.now() + 10000;
@@ -93,7 +93,8 @@ it.each(["exports", "main"] as const)("watches a bundled package resolved throug
         result.ok,
     );
     expect(first?.artifact.externalModules).toEqual([]);
-    expect(first?.artifact.code).toContain("first");
+    expect(first).toBeDefined();
+    expect(instantiateTrustedBundle<{ label: string }>(first!.artifact, { externals: {} }).label).toBe("first");
 
     const count = results.length;
     await writeFile(
@@ -108,6 +109,11 @@ it.each(["exports", "main"] as const)("watches a bundled package resolved throug
           results.at(-1) as Extract<ComponentOnceWatchResult, { ok: true }>
         ).artifact.code.includes("second"),
     );
+    const rebuilt = results.at(-1);
+    expect(rebuilt?.ok).toBe(true);
+    if (rebuilt?.ok) {
+      expect(instantiateTrustedBundle<{ label: string }>(rebuilt.artifact, { externals: {} }).label).toBe("second");
+    }
   } finally {
     await watcher.dispose();
     await rm(dir, { recursive: true, force: true });
