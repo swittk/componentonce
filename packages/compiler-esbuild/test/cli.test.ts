@@ -94,10 +94,14 @@ it.each(["test", "react"])("bundles both required packages from repeated --bundl
         fileURLToPath(new URL("../node_modules/react", import.meta.url)),
         join(root, "node_modules", "react"),
       );
-      await symlink(
-        fileURLToPath(new URL("../../react", import.meta.url)),
-        join(root, "node_modules", "@componentonce", "react"),
-      );
+      // This test exercises CLI bundle options, not the adapter implementation.
+      // Keep its eagerly loaded host external independent of workspace dist files.
+      const adapterDirectory = join(root, "node_modules", "@componentonce", "react");
+      await mkdir(adapterDirectory);
+      await writeFile(join(adapterDirectory, "package.json"), JSON.stringify({
+        name: "@componentonce/react", type: "module", exports: "./index.js",
+      }));
+      await writeFile(join(adapterDirectory, "index.js"), "export {};");
     }
     const packageDirectory = join(root, "node_modules", "fixture-cli-bundle");
     await mkdir(packageDirectory, { recursive: true });

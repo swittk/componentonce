@@ -708,7 +708,7 @@ async function calculateCompilationNamespace(
       !input.allowedExternals.has(imported.path),
     ),
   );
-  const dependencies = new Map(await collectPortableDependencies(result.metafile, root, input.sourceFileName, input.bundledModules));
+  const dependencies = new Map(await collectPortableDependencies(result.metafile, root, input.sourceFileName, input.bundledModules, input.loaders));
   if (hasGlobImports) {
     const entryPath = resolve(root, input.sourceFileName);
     for (const path of Object.keys(result.metafile.inputs)) {
@@ -739,8 +739,10 @@ async function collectPortableDependencies(
   root: string,
   sourceFileName: string,
   bundledModules: ReadonlySet<string>,
+  loaders: Readonly<Record<string, ComponentOnceAdditionalLoader>>,
 ): Promise<ReadonlyMap<string, PortableDependency>> {
   const dependencies = new Map<string, PortableDependency>();
+  const configuredExtensions = Object.keys(loaders);
   const normalizedEntry = relative(root, resolve(root, sourceFileName)).replace(/\\/gu, "/");
   const entryPath = metafile.inputs[normalizedEntry] === undefined ? "<stdin>" : normalizedEntry;
   const queue = [{ path: entryPath, inPackage: false }];
@@ -764,7 +766,11 @@ async function collectPortableDependencies(
       const extension = extname(absolutePath);
       // Custom namespaces cannot inherit package.json's type. Preserve esbuild's
       // Node-style default-import semantics using its equivalent explicit extension.
-      const modulePath = inPackage && [".js", ".jsx", ".ts", ".tsx"].includes(extension) &&
+      // Configured loaders handle assets, not source modules; preserve their
+      // extension for emitted URLs and content-type overrides.
+      const isSource = [".js", ".jsx", ".ts", ".tsx"].includes(extension) &&
+        !configuredExtensions.some((suffix) => absolutePath.toLowerCase().endsWith(suffix));
+      const modulePath = inPackage && isSource &&
         await isEsmPackage(dirname(absolutePath), packageTypes)
         ? stablePath.slice(0, -extension.length) + (extension.startsWith(".t") ? ".mts" : ".mjs")
         : stablePath;

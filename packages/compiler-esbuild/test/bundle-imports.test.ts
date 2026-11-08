@@ -629,3 +629,29 @@ it("names the React import-ownership options in undeclared import diagnostics", 
     sourceFileName: "entry.ts",
   })).rejects.toThrow(/additionalBundleModules.*additionalExternalModules/u);
 });
+
+it.each([".js", ".worker.js"])("preserves bundled worker asset extensions with the %s file loader", async (extension) => {
+  await withPackageFixture(async (root) => {
+    const helper = join(root, "node_modules", "@fixture", "helper");
+    const workerSource = 'self.onmessage = () => self.postMessage("ready");';
+    await writeFile(join(helper, "package.json"), JSON.stringify({
+      name: "@fixture/helper", type: "module", exports: "./index.mjs",
+    }));
+    await writeFile(join(helper, "index.mjs"),
+      'export { default as workerUrl } from "./background.worker.js";');
+    await writeFile(join(helper, "background.worker.js"), workerSource);
+    const artifact = await compileTrustedModule({
+      source: 'export { workerUrl } from "@fixture/helper";',
+      sourceFileName: "entry.ts", resolveDir: root,
+      bundleModules: ["@fixture/helper"],
+      loaders: { [extension]: "file" },
+      contentTypes: { ".js": "text/javascript" },
+    });
+    const { workerUrl } = instantiateTrustedBundle<{ workerUrl: string }>(artifact, { externals: {} });
+    const asset = artifact.assets.find((candidate) => "componentonce-asset:/" + candidate.path === workerUrl)!;
+    expect(asset).toBeDefined();
+    expect(asset.path).toMatch(/\.js$/u);
+    expect(asset.contentType).toBe("text/javascript");
+    expect(Buffer.from(asset.content, "base64").toString("utf8")).toBe(workerSource);
+  });
+});
