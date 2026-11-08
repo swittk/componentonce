@@ -38,6 +38,8 @@ if (componentPackage.format !== "componentonce.trusted-package.v2") {
   throw new Error("Expected a v2 package");
 }
 
+// Call loading.abort() from the host navigation/disposal cleanup while this load is pending.
+const loading = new AbortController();
 const blobs = createBrowserBlobAssetUrlResolver();
 const assets = await prepareTrustedComponentPackageAssets(componentPackage, {
   resolveAssetUrl: blobs.resolveAssetUrl,
@@ -46,8 +48,11 @@ const assets = await prepareTrustedComponentPackageAssets(componentPackage, {
 const definition = await instantiateTrustedComponentPackage(componentPackage, {
   externals: hostExternals,
   preparedAssets: assets,
+  signal: loading.signal,
 });
 ```
+
+The optional `signal` is checked immediately before executable evaluation, including after awaited integrity verification. If it has been aborted, instantiation rejects with `signal.reason` without running the bundle. It does not interrupt Web Crypto work or code that has already started executing. Prepared assets remain host-owned: dispose them when a canceled load is no longer needed.
 
 For React, attach styles to the container's real owner document, including an iframe document:
 
