@@ -188,7 +188,15 @@ not need to install or know about it. Transitive bare imports also need an expli
 all of its dependencies. Package subpaths are included, but similarly named packages
 are not. Packages without an exports map resolve their `module` field before `main`.
 Selected CSS package imports also resolve through the package; CSS Modules retain
-the compilation namespace, including direct package subpaths.
+the compilation namespace, including direct package subpaths. Dependency identities
+come from the import graph, so linked package target locations do not change CSS
+class names or artifact hashes. Package resolution still follows real package
+locations, including unhoisted transitive dependencies in package-manager stores.
+
+Trusted artifacts replace `process.env.NODE_ENV` with `"production"` at compile
+time, regardless of the build machine's environment. This does not inject other
+Node globals. Dynamic imports of declared host externals use the same injected
+host modules as static imports and retain their asynchronous result.
 
 The React helpers keep React and its JSX runtimes host-owned automatically. The
 build and dev CLIs also externalize the ComponentOnce React adapter. Programmatic

@@ -12,6 +12,7 @@ import {
   build,
   context as createBuildContext,
   type BuildFailure,
+  type BuildOptions,
   type Loader,
   type Message,
   type Metafile,
@@ -31,6 +32,12 @@ const DEFAULT_EVALUATED_SOURCE_NAME = "componentonce-trusted-bundle.js";
 const REACT_EXTERNALS = ["react", "react/jsx-runtime", "react/jsx-dev-runtime"] as const;
 const OUTPUT_DIRECTORY_NAME = ".componentonce-output";
 const PACKAGE_MAIN_FIELDS = ["module", "main"];
+// Trusted artifacts have a fixed environment, independent of the build machine.
+const TRUSTED_BUILD_OPTIONS = {
+  define: { "process.env.NODE_ENV": JSON.stringify("production") },
+  // The evaluator injects require, not a browser/Node dynamic-import loader.
+  supported: { "dynamic-import": false },
+} satisfies BuildOptions;
 const DEFAULT_FILE_LOADERS: Readonly<Record<string, ComponentOnceAdditionalLoader>> = {
   ".avif": "file",
   ".bmp": "file",
@@ -281,7 +288,7 @@ export async function compileTrustedModule(
   const contentTypes = normalizeContentTypes(input.contentTypes);
 
   try {
-    const compilationNamespace = await calculateCompilationNamespace({
+    const compilation = await calculateCompilationNamespace({
       source: input.source,
       sourceFileName,
       loader,
@@ -293,6 +300,7 @@ export async function compileTrustedModule(
       outputDirectory,
     });
     const result = await build({
+      ...TRUSTED_BUILD_OPTIONS,
       absWorkingDir: workingDirectory,
       assetNames: "assets/[hash]",
       bundle: true,
@@ -309,7 +317,10 @@ export async function compileTrustedModule(
       platform: "neutral",
       mainFields: PACKAGE_MAIN_FIELDS,
       plugins: [
-        createCssModuleNamespacePlugin(compilationNamespace, workingDirectory, bundledModules),
+        createPortableDependencyPlugin(compilation.dependencies, loaders),
+        createCssModuleNamespacePlugin(
+          compilation.namespace, workingDirectory, bundledModules, compilation.dependencies,
+        ),
         createHostExternalPlugin(allowedExternals, bundledModules),
       ],
       publicPath: COMPONENTONCE_ASSET_URL_PREFIX,
@@ -636,11 +647,13 @@ interface CompilationNamespaceInput {
   readonly outputDirectory: string;
 }
 
+/** Hash reachable source contents under portable dependency identities for CSS isolation. */
 async function calculateCompilationNamespace(
   input: CompilationNamespaceInput,
-): Promise<string> {
+): Promise<{ readonly namespace: string; readonly dependencies: ReadonlyMap<string, PortableDependency> }> {
   const root = resolve(input.resolveDir ?? process.cwd());
   const result = await build({
+    ...TRUSTED_BUILD_OPTIONS,
     absWorkingDir: root,
     assetNames: "assets/[hash]",
     bundle: true,
@@ -678,31 +691,127 @@ async function calculateCompilationNamespace(
     ]);
   }
 
-  const virtualEntryPath = resolve(root, input.sourceFileName);
+  const dependencies = await collectPortableDependencies(result.metafile, root, input.sourceFileName, input.bundledModules);
   const hash = createHash("sha256");
   updateNamespacedHash(hash, "entry/" + basename(input.sourceFileName), Buffer.from(input.source));
-  const dependencyFiles = Object.keys(result.metafile.inputs)
-    .flatMap((inputPath) => {
-      if (inputPath === input.sourceFileName || inputPath === "<stdin>") return [];
-      const dependencyPath = splitPathSuffix(inputPath).path;
-      const absolutePath = isAbsolute(dependencyPath)
-        ? dependencyPath
-        : resolve(root, dependencyPath);
-      if (absolutePath === virtualEntryPath) return [];
-      return [{
-        absolutePath,
-        stablePath: relative(root, absolutePath).replace(/\\/gu, "/"),
-      }];
-    })
-    .sort((left, right) => compareStrings(left.stablePath, right.stablePath));
-  for (const dependency of dependencyFiles) {
-    updateNamespacedHash(
-      hash,
-      dependency.stablePath,
-      await readFile(dependency.absolutePath),
-    );
+  for (const [absolutePath, dependency] of dependencies) {
+    updateNamespacedHash(hash, dependency.stablePath, await readFile(absolutePath));
   }
-  return hash.digest("hex").slice(0, 16);
+  return { namespace: hash.digest("hex").slice(0, 16), dependencies };
+}
+
+/** Physical inputs retain their resolver context but expose graph-based artifact identities. */
+interface PortableDependency {
+  readonly stablePath: string;
+  readonly modulePath: string;
+  readonly virtual: boolean;
+}
+
+/** Walk source-order import edges so package-store and workspace target paths do not enter hashes. */
+async function collectPortableDependencies(
+  metafile: Metafile,
+  root: string,
+  sourceFileName: string,
+  bundledModules: ReadonlySet<string>,
+): Promise<ReadonlyMap<string, PortableDependency>> {
+  const dependencies = new Map<string, PortableDependency>();
+  const entryPath = metafile.inputs[sourceFileName] === undefined ? "<stdin>" : sourceFileName;
+  const queue = [{ path: entryPath, inPackage: false }];
+  const visited = new Set([entryPath]);
+  const packageTypes = new Map<string, boolean>();
+  for (let index = 0; index < queue.length; index += 1) {
+    const current = queue[index]!;
+    const input = metafile.inputs[current.path];
+    for (const imported of input?.imports ?? []) {
+      if (imported.external || visited.has(imported.path)) continue;
+      visited.add(imported.path);
+      const original = imported.original ?? "";
+      const inPackage = current.inPackage || matchesBundledModule(original, bundledModules);
+      queue.push({ path: imported.path, inPackage });
+      const absolutePath = resolve(root, splitPathSuffix(imported.path).path);
+      if (dependencies.has(absolutePath)) continue;
+      const stablePath = "dependency/" + dependencies.size + "/" + basename(absolutePath);
+      const extension = extname(absolutePath);
+      // Custom namespaces cannot inherit package.json's type. Preserve esbuild's
+      // Node-style default-import semantics using its equivalent explicit extension.
+      const modulePath = inPackage && [".js", ".jsx", ".ts", ".tsx"].includes(extension) &&
+        await isEsmPackage(dirname(absolutePath), packageTypes)
+        ? stablePath.slice(0, -extension.length) + (extension.startsWith(".t") ? ".mts" : ".mjs")
+        : stablePath;
+      dependencies.set(absolutePath, { stablePath, modulePath, virtual: inPackage });
+    }
+  }
+  return dependencies;
+}
+
+/** Find the nearest package type without following a linked package back to the caller's directory. */
+async function isEsmPackage(directory: string, cache: Map<string, boolean>): Promise<boolean> {
+  const cached = cache.get(directory);
+  if (cached !== undefined) return cached;
+  if (basename(directory) === "node_modules") return false;
+  let value: boolean;
+  try {
+    const manifest = JSON.parse((await readFile(resolve(directory, "package.json"), "utf8")).replace(/^\uFEFF/u, "")) as { type?: string };
+    value = manifest.type === "module";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const parent = dirname(directory);
+    value = parent !== directory && await isEsmPackage(parent, cache);
+  }
+  cache.set(directory, value);
+  return value;
+}
+
+/** Keep native package resolution while replacing emitted dependency paths with portable graph identities. */
+function createPortableDependencyPlugin(
+  dependencies: ReadonlyMap<string, PortableDependency>,
+  loaders: Readonly<Record<string, ComponentOnceAdditionalLoader>>,
+): Plugin {
+  const namespace = "componentonce-dependency";
+  const paths = new Map([...dependencies].map(([realPath, dependency]) => [dependency.modulePath, realPath]));
+  const configuredExtensions = Object.keys(loaders).sort((left, right) => right.length - left.length);
+  const sourceLoaders: Readonly<Record<string, Loader>> = {
+    ".js": "js", ".mjs": "js", ".cjs": "js", ".jsx": "jsx",
+    ".ts": "ts", ".mts": "ts", ".cts": "ts", ".tsx": "tsx",
+    ".css": "css", ".json": "json", ".txt": "text",
+  };
+  return {
+    name: "componentonce-portable-dependencies",
+    setup(buildApi) {
+      buildApi.onResolve({ filter: /.*/ }, async (args) => {
+        if (args.pluginData?.componentOnceResolvingPortable) return undefined;
+        const resolved = await buildApi.resolve(args.path, {
+          kind: args.kind,
+          namespace: args.namespace === namespace ? "file" : args.namespace,
+          importer: args.pluginData?.realPath ?? args.importer,
+          resolveDir: args.resolveDir,
+          with: args.with,
+          pluginData: { ...args.pluginData, componentOnceResolvingPortable: true },
+        });
+        if (resolved.errors.length > 0 || resolved.external || resolved.namespace !== "file") return resolved;
+        const dependency = dependencies.get(resolved.path);
+        if (dependency === undefined || !dependency.virtual) return resolved;
+        return { ...resolved, path: dependency.modulePath, namespace, pluginData: { realPath: resolved.path } };
+      });
+      buildApi.onLoad({ filter: /.*/, namespace }, async (args) => {
+        const realPath = paths.get(args.path)!;
+        const extension = extname(realPath).toLowerCase();
+        const configuredExtension = configuredExtensions.find(
+          (suffix) => realPath.toLowerCase().endsWith(suffix),
+        );
+        const loader = configuredExtension === undefined
+          ? sourceLoaders[extension] ?? "default"
+          : loaders[configuredExtension]!;
+        return {
+          contents: await readFile(realPath),
+          loader: loader as Loader,
+          resolveDir: dirname(realPath),
+          watchFiles: [realPath],
+          pluginData: { realPath },
+        };
+      });
+    },
+  };
 }
 
 function updateNamespacedHash(
@@ -718,6 +827,7 @@ function createCssModuleNamespacePlugin(
   compilationNamespace: string,
   workingDirectory: string,
   bundledModules: ReadonlySet<string>,
+  dependencies: ReadonlyMap<string, PortableDependency>,
 ): Plugin {
   const namespace = "componentonce-local-css";
   return {
@@ -727,7 +837,8 @@ function createCssModuleNamespacePlugin(
         const realPath = isAbsolute(path) ? path : resolve(resolveDir, path);
         const contents = await readFile(realPath);
         const contentNamespace = createHash("sha256").update(contents).digest("hex").slice(0, 12);
-        const stablePath = relative(workingDirectory, realPath).replace(/\\/gu, "/");
+        const stablePath = dependencies.get(realPath)?.stablePath ??
+          relative(workingDirectory, realPath).replace(/\\/gu, "/");
         const pathNamespace = createHash("sha256").update(stablePath).digest("hex").slice(0, 12);
         const originalName = basename(realPath, ".module.css");
         return {
@@ -746,9 +857,8 @@ function createCssModuleNamespacePlugin(
         };
       };
 
-      const resolvingPackage = {};
       buildApi.onResolve({ filter: /.*/ }, async (args) => {
-        if (args.pluginData === resolvingPackage) return undefined;
+        if (args.pluginData?.componentOnceResolvingPackage) return undefined;
         const reference = splitPathSuffix(args.path);
         if (matchesBundledModule(reference.path, bundledModules)) {
           // Resolve package exports/main fields first, including extensionless CSS aliases.
@@ -756,12 +866,12 @@ function createCssModuleNamespacePlugin(
             kind: args.kind,
             namespace: "file",
             resolveDir: args.resolveDir,
-            pluginData: resolvingPackage,
+            pluginData: { ...args.pluginData, componentOnceResolvingPackage: true },
           });
           if (resolved.errors.length > 0 || resolved.external ||
               !resolved.path.endsWith(".module.css")) return resolved;
           return {
-            ...await resolveModule(resolved.path, args.resolveDir, resolved.suffix),
+            ...await resolveModule(resolved.pluginData?.realPath ?? resolved.path, args.resolveDir, resolved.suffix),
             warnings: resolved.warnings,
           };
         }
@@ -1132,6 +1242,7 @@ export async function watchTrustedModuleFile(input: ComponentOnceWatchInput): Pr
     bundledModules,
   );
   const graph = await createBuildContext({
+    ...TRUSTED_BUILD_OPTIONS,
     absWorkingDir: workingDirectory,
     // A virtual importer lets the strict external plugin handle the entry as a relative import.
     stdin: { contents: 'import ' + JSON.stringify('./' + basename(entry)), resolveDir: workingDirectory, sourcefile: '__componentonce_watch__.ts' },

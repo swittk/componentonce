@@ -70,7 +70,10 @@ it.each(["exports", "main"] as const)("watches a bundled package resolved throug
       [field]: "./entry.js",
     }),
   );
-  await writeFile(join(packageDir, "entry.js"), 'export const label = "first";\n');
+  await writeFile(join(packageDir, "entry.js"), [
+    'if (process.env.NODE_ENV !== "production") require("development-only");',
+    'export const label = "first";',
+  ].join("\n"));
   await writeFile(
     entry,
     'import { label } from "fixture-watch-bundle"; export { label };',

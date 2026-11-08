@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as React from "react";
@@ -67,10 +67,20 @@ it("requires an explicit ownership choice for transitive bare imports", async ()
 it("forwards additionalBundleModules through React package building and keeps host React external", async () => {
   await withPackageFixture(async (root) => {
     const externals = { react: React, "react/jsx-runtime": jsxRuntime };
+    await writeFile(join(root, "node_modules", "@fixture", "formatter", "format.js"), `
+      import * as React from "react";
+      import { jsx } from "react/jsx-runtime";
+      import { wrap } from "@fixture/helper";
+      export const format = (value) => wrap(value);
+      export const hostReact = React;
+      export const hostJsx = jsx;
+    `);
     const componentPackage = await buildTrustedReactPackage({
       source: `
         import * as React from "react";
-        import { format } from "@fixture/formatter/format";
+        import { jsx } from "react/jsx-runtime";
+        import { format, hostReact, hostJsx } from "@fixture/formatter/format";
+        if (hostReact.createElement !== React.createElement || hostReact.useState !== React.useState || hostJsx !== jsx) throw new Error("Duplicate host runtime");
         export const definition = {
           manifest: { id: "example/bundled", version: "1.0.0" },
           implementation: () => <strong>{format(React.version)}</strong>,
@@ -169,14 +179,22 @@ it.each(["css", "module.css"])("resolves selected CSS package imports from %s wh
       '}',
     ].join("\n"));
     const artifact = await compileTrustedModule({
-      source: 'import "./styles.' + extension + '"; export const value = 1;',
+      source: extension === "module.css"
+        ? 'import styles from "./styles.module.css"; export { styles };'
+        : 'import "./styles.css"; export const value = 1;',
       sourceFileName: "entry.ts", resolveDir: root, bundleModules: ["@fixture/helper"],
     });
     const css = Buffer.from(artifact.assets!.find((asset) => asset.path === "component.css")!.content, "base64").toString("utf8");
     expect(css).toContain("package-theme");
     expect(css).toContain("local-rule");
     expect(css).toContain("?variant=small#icon");
-    if (extension === "module.css") expect(css).toContain("color: blue");
+    if (extension === "module.css") {
+      expect(css).toContain("color: blue");
+      const { styles } = instantiateTrustedBundle<{ styles: { root: string } }>(artifact, { externals: {} });
+      const baseClass = /\.([\w-]+)\s*\{\s*color: blue;/u.exec(css)?.[1];
+      expect(baseClass).toBeDefined();
+      expect(styles.root.split(" ")).toContain(baseClass);
+    }
   });
 });
 
@@ -187,3 +205,114 @@ it.each(["C:/workspace/helper.js", "C:\\workspace\\helper.js", "\\\\server\\shar
     })).rejects.toThrow("Invalid bundled module specifier");
   },
 );
+
+
+it("initializes bundled dependencies without a browser process global", async () => {
+  await withPackageFixture(async (root) => {
+    const helper = join(root, "node_modules", "@fixture", "helper");
+    await writeFile(join(helper, "index.js"), `
+      export const environment = process.env.NODE_ENV;
+      export const value = process.env.NODE_ENV === "production" ? "release" : "debug";
+    `);
+    const artifact = await compileTrustedModule({
+      source: 'export { environment, value } from "@fixture/helper";',
+      sourceFileName: "entry.ts", resolveDir: root, bundleModules: ["@fixture/helper"],
+    });
+    // Shadow Node's global so this exercises the browser's lack of a process object.
+    const exports = {};
+    const module = { exports };
+    new Function("module", "exports", "process", artifact.code)(module, exports, undefined);
+    expect(module.exports).toMatchObject({ environment: "production", value: "release" });
+  });
+});
+
+it.each(["entry", "bundled package"])("loads dynamic host imports from the injected map in %s", async (importer) => {
+  await withPackageFixture(async (root) => {
+    const helper = join(root, "node_modules", "@fixture", "helper");
+    const source = `
+      export const load = () => import("host-sdk");
+      export const loadLocal = () => import("./local.js");
+    `;
+    await writeFile(join(importer === "entry" ? root : helper, "local.js"), 'export const value = "local";');
+    if (importer === "bundled package") await writeFile(join(helper, "index.js"), source);
+    const artifact = await compileTrustedModule({
+      source: importer === "entry" ? source : 'export { load, loadLocal } from "@fixture/helper";',
+      sourceFileName: "entry.ts", resolveDir: root, bundleModules: ["@fixture/helper"],
+      externalModules: ["host-sdk"],
+    });
+    const marker = {};
+    const host = { value: marker };
+    type LoadedModule = {
+      load(): Promise<{ value: unknown; default: unknown }>;
+      loadLocal(): Promise<{ value: string }>;
+    };
+    const instance = instantiateTrustedBundle<LoadedModule>(artifact, { externals: { "host-sdk": host } });
+    expect(artifact.externalModules).toEqual(["host-sdk"]);
+    const pending = instance.load();
+    expect(pending).toBeInstanceOf(Promise);
+    const loaded = await pending;
+    expect(loaded.value).toBe(marker);
+    expect(loaded.default).toBe(host);
+    expect((await instance.loadLocal()).value).toBe("local");
+    const missing = instantiateTrustedBundle<LoadedModule>(artifact, { externals: {} });
+    await expect(missing.load()).rejects.toThrow('Missing trusted bundle external "host-sdk"');
+  });
+});
+
+it("emits identical CSS classes and artifact hashes for linked packages at different target locations", async () => {
+  const compile = async (targetDirectory: string) => {
+    let result: unknown;
+    await withPackageFixture(async (root) => {
+      const helper = join(root, "node_modules", "@fixture", "helper");
+      await writeFile(join(helper, "index.js"), 'import styles from "./card.module.css"; export { styles };');
+      await writeFile(join(helper, "card.module.css"), '.root { color: blue; }');
+      await writeFile(join(helper, "package.json"), JSON.stringify({
+        name: "@fixture/helper", version: "1.0.0", type: "module",
+        exports: { ".": "./index.js", "./theme.css": "./theme.css" },
+      }));
+      await writeFile(join(helper, "theme.css"), '.theme { background: url("./image.svg"); }');
+      await writeFile(join(helper, "image.svg"), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+      const target = join(root, targetDirectory, "helper");
+      await mkdir(join(root, targetDirectory), { recursive: true });
+      await rename(helper, target);
+      await symlink(target, helper, "dir");
+      const artifact = await compileTrustedModule({
+        source: 'import "@fixture/helper/theme.css"; export { styles } from "@fixture/helper";',
+        sourceFileName: "entry.ts", resolveDir: root, bundleModules: ["@fixture/helper"],
+      });
+      const { styles } = instantiateTrustedBundle<{ styles: { root: string } }>(artifact, { externals: {} });
+      const css = artifact.assets.find((asset) => asset.path === "component.css")!;
+      expect(Buffer.from(css.content, "base64").toString("utf8")).toContain("." + styles.root);
+      result = { className: styles.root, bundleHash: artifact.sha256, assets: artifact.assets };
+    });
+    return result;
+  };
+  expect(await compile("store-a")).toEqual(await compile("different-store/nested"));
+});
+
+
+it("keeps linked package transitive resolution and package-type default imports", async () => {
+  await withPackageFixture(async (root) => {
+    const formatter = join(root, "node_modules", "@fixture", "formatter");
+    const helper = join(root, "node_modules", "@fixture", "helper");
+    const store = join(root, "isolated-store", "node_modules", "@fixture");
+    await mkdir(store, { recursive: true });
+    await writeFile(join(formatter, "format.js"), `
+      import host from "host-sdk";
+      import { wrap } from "@fixture/helper";
+      export const value = wrap(host.value);
+    `);
+    await rename(formatter, join(store, "formatter"));
+    await rename(helper, join(store, "helper"));
+    await symlink(join(store, "formatter"), formatter, "dir");
+    const artifact = await compileTrustedModule({
+      source: 'export { value } from "@fixture/formatter";',
+      sourceFileName: "entry.ts", resolveDir: root,
+      bundleModules: ["@fixture/formatter", "@fixture/helper"], externalModules: ["host-sdk"],
+    });
+    const host = { __esModule: true, value: "host", default: { value: "wrong interop" } };
+    expect(instantiateTrustedBundle<{ value: string }>(artifact, {
+      externals: { "host-sdk": host },
+    }).value).toBe("[host]");
+  });
+});
