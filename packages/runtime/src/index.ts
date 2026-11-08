@@ -79,6 +79,8 @@ export type ComponentOnceHostExternals = Readonly<Record<string, unknown>>;
 
 /** Runtime execution options. */
 export interface InstantiateTrustedComponentOptions {
+  /** Prevent executable evaluation if aborted, including during awaited integrity verification. */
+  readonly signal?: AbortSignal;
   readonly externals: ComponentOnceHostExternals;
   readonly sourceName?: string;
   /** Required for v2 packages so generated asset imports receive host URLs. */
@@ -467,6 +469,8 @@ export async function instantiateTrustedComponentPackage<TDefinition extends Any
   } else {
     await verifyTrustedComponentPackage(componentPackage);
   }
+  // The host may have changed context while integrity verification awaited Web Crypto.
+  options.signal?.throwIfAborted();
   const exports = instantiateCommonJs(code, options);
   const definition = isRecord(exports) ? exports[componentPackage.definitionExport] : undefined;
   if (!isDefinition(definition)) throw new TypeError("Trusted package export " + JSON.stringify(componentPackage.definitionExport) + " is not a ComponentOnce definition.");
