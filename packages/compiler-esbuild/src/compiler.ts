@@ -18,6 +18,7 @@ import {
   type Metafile,
   type OutputFile,
   type Plugin,
+  type PluginBuild,
 } from "esbuild";
 
 /** Stable identifier for the trusted CommonJS bundle contract emitted by this package. */
@@ -743,25 +744,21 @@ function collectDependencyIdentities(
   return dependencies;
 }
 
-/** Find the nearest package directory while retaining native symlink resolution. */
-async function findPackageDirectory(
-  directory: string,
-  cache: Map<string, string | null>,
-): Promise<string | null> {
-  const cached = cache.get(directory);
-  if (cached !== undefined) return cached;
-  if (basename(directory) === "node_modules") return null;
-  let scope: string | null;
-  try {
-    await readFile(resolve(directory, "package.json"));
-    scope = directory;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    const parent = dirname(directory);
-    scope = parent === directory ? null : await findPackageDirectory(parent, cache);
-  }
-  cache.set(directory, scope);
-  return scope;
+/** Let native package resolution distinguish private file targets from dependency aliases. */
+async function createPrivateImportResolver(absWorkingDir: string | undefined) {
+  let nativeResolve!: PluginBuild["resolve"];
+  const context = await createBuildContext({
+    ...(absWorkingDir === undefined ? {} : { absWorkingDir }),
+    platform: "neutral",
+    mainFields: PACKAGE_MAIN_FIELDS,
+    packages: "external",
+    write: false,
+    plugins: [{
+      name: "componentonce-private-import-resolver",
+      setup(api) { nativeResolve = api.resolve; },
+    }],
+  });
+  return { resolve: nativeResolve, dispose: () => context.dispose() };
 }
 
 function updateNamespacedHash(
@@ -902,10 +899,15 @@ function createHostExternalPlugin(
   return {
     name: "componentonce-host-externals",
     setup(buildApi) {
-      const packageScopes = new Map<string, string | null>();
-      buildApi.onStart(() => { packageScopes.clear(); });
+      let privateResolver: ReturnType<typeof createPrivateImportResolver> | undefined;
+      const disposePrivateResolver = async () => {
+        const resolver = privateResolver;
+        privateResolver = undefined;
+        await resolver?.then((value) => value.dispose(), () => {});
+      };
+      buildApi.onEnd(disposePrivateResolver);
+      buildApi.onDispose(() => { void disposePrivateResolver(); });
       buildApi.onResolve({ filter: /.*/ }, async (args) => {
-        if (args.pluginData?.componentOnceResolvingPrivate) return undefined;
         if (isCssReferenceKind(args.kind)) {
           const reference = splitPathSuffix(args.path);
           if (!isNonFileCssPath(reference.path) &&
@@ -922,22 +924,19 @@ function createHostExternalPlugin(
           return undefined;
         }
         if (args.path.startsWith("#")) {
-          // Let esbuild interpret imports maps, patterns, and conditions. A
-          // package-local target is like a relative import, not another package.
-          const resolved = await buildApi.resolve(args.path, {
+          // Native resolution follows file targets across nested scopes while
+          // marking dependency targets external, even through workspace links.
+          const resolver = await (privateResolver ??=
+            createPrivateImportResolver(buildApi.initialOptions.absWorkingDir));
+          const resolved = await resolver.resolve(args.path, {
             kind: args.kind,
             namespace: "file",
             importer: args.pluginData?.realPath ?? args.importer,
             resolveDir: args.resolveDir,
             with: args.with,
-            pluginData: { ...args.pluginData, componentOnceResolvingPrivate: true },
           });
           if (resolved.errors.length > 0) return resolved;
-          const scope = await findPackageDirectory(args.resolveDir, packageScopes);
-          if (scope !== null && resolved.namespace === "file" && !resolved.external) {
-            const targetScope = await findPackageDirectory(dirname(resolved.path), packageScopes);
-            if (targetScope === scope) return undefined;
-          }
+          if (resolved.namespace === "file" && !resolved.external) return undefined;
         }
         return {
           errors: [
@@ -962,7 +961,8 @@ function matchesBundledModule(
   bundledModules: ReadonlySet<string>,
 ): boolean {
   for (const bundled of bundledModules) {
-    if (specifier === bundled || specifier.startsWith(bundled + "/")) {
+    if (specifier === bundled || specifier.startsWith(bundled + "/") ||
+        specifier.startsWith(bundled + "?") || specifier.startsWith(bundled + "#")) {
       return true;
     }
   }

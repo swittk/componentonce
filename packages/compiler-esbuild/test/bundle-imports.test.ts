@@ -719,6 +719,64 @@ it.each([".js", ".worker.js"])("preserves bundled worker asset extensions with t
   });
 });
 
+it.each(["?variant=small", "#theme"])("bundles selected CSS subpaths with the %s suffix", async (suffix) => {
+  await withPackageFixture(async (root) => {
+    const helper = join(root, "node_modules", "@fixture", "helper");
+    await writeFile(join(helper, "package.json"), JSON.stringify({
+      name: "@fixture/helper", type: "module", exports: { "./styles.module.css": "./styles.module.css" },
+    }));
+    await writeFile(join(helper, "styles.module.css"), ".root { color: red; }");
+    const specifier = "@fixture/helper/styles.module.css" + suffix;
+    const input = {
+      source: 'import styles from ' + JSON.stringify(specifier) + '; export { styles };',
+      sourceFileName: "entry.ts", resolveDir: root,
+      bundleModules: ["@fixture/helper/styles.module.css"],
+    };
+    const artifact = await compileTrustedModule(input);
+    const loaded = instantiateTrustedBundle<{ styles: { root: string } }>(artifact, { externals: {} });
+    const css = Buffer.from(artifact.assets.find((asset) => asset.path === "component.css")!.content, "base64").toString("utf8");
+    expect(css).toContain("." + loaded.styles.root);
+    expect(css).toContain("color: red");
+    expect(Object.keys(artifact.metafile.inputs).some((path) => path.endsWith(suffix))).toBe(true);
+    expect(artifact.externalModules).toEqual([]);
+
+    const external = await compileTrustedModule({ ...input, externalModules: [specifier] });
+    const styles = { root: "host-owned" };
+    expect(external.externalModules).toEqual([specifier]);
+    expect(instantiateTrustedBundle<{ styles: object }>(external, { externals: { [specifier]: styles } }).styles).toBe(styles);
+  });
+});
+
+it("follows private local imports into nested CommonJS package scopes", async () => {
+  await withPackageFixture(async (root) => {
+    const helper = join(root, "node_modules", "@fixture", "helper");
+    await mkdir(join(helper, "cjs"));
+    await writeFile(join(helper, "package.json"), JSON.stringify({
+      name: "@fixture/helper", type: "module", exports: "./index.js",
+      imports: { "#implementation": "./cjs/implementation.js" },
+    }));
+    await writeFile(join(helper, "cjs", "package.json"), '{"type":"commonjs"}');
+    await writeFile(join(helper, "cjs", "implementation.js"), 'exports.state = { value: "local" };');
+    await writeFile(join(helper, "index.js"), [
+      'import { state } from "#implementation"; export { state };',
+      'export const load = () => import("#implementation");',
+      'export const loadCjs = () => require("#implementation");',
+    ].join("\n"));
+    const artifact = await compileTrustedModule({
+      source: 'export * from "@fixture/helper";',
+      sourceFileName: "entry.ts", resolveDir: root, bundleModules: ["@fixture/helper"],
+    });
+    type State = { value: string };
+    const loaded = instantiateTrustedBundle<{
+      state: State; load(): Promise<{ state: State }>; loadCjs(): { state: State };
+    }>(artifact, { externals: {} });
+    expect(loaded.state.value).toBe("local");
+    expect((await loaded.load()).state).toBe(loaded.state);
+    expect(loaded.loadCjs().state).toBe(loaded.state);
+    expect(artifact.externalModules).toEqual([]);
+  });
+});
+
 it("resolves linked package-private imports, conditions, patterns, and isolated CSS", async () => {
   const compile = async (targetDirectory: string) => {
     let result!: Awaited<ReturnType<typeof compileTrustedModule>>;
@@ -789,7 +847,7 @@ it("resolves package-private file imports from the entry package", async () => {
   });
 });
 
-it.each(["sibling", "nested"])("retains explicit bundled and host-owned choices for private aliases to %s dependencies", async (layout) => {
+it.each(["sibling", "nested", "workspace"])("retains explicit bundled and host-owned choices for private aliases to %s dependencies", async (layout) => {
   await withPackageFixture(async (root) => {
     const helper = join(root, "node_modules", "@fixture", "helper");
     await writeFile(join(helper, "package.json"), JSON.stringify({
@@ -803,6 +861,10 @@ it.each(["sibling", "nested"])("retains explicit bundled and host-owned choices 
       const scopedModules = join(helper, "node_modules", "@fixture");
       await mkdir(scopedModules, { recursive: true });
       await rename(formatter, join(scopedModules, "formatter"));
+    } else if (layout === "workspace") {
+      const workspace = join(helper, "workspace-formatter");
+      await rename(formatter, workspace);
+      await symlink(workspace, formatter, "dir");
     }
     const input = {
       source: 'export { value } from "@fixture/helper";',
