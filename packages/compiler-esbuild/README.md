@@ -186,7 +186,9 @@ A bundled package does not appear in bundle.externalModules, so the host does
 not need to install or know about it. Transitive bare imports also need an explicit
 `--bundle` or `--external` entry; selecting one package does not automatically allow
 all of its dependencies. Package subpaths are included, but similarly named packages
-are not.
+are not. Packages without an exports map resolve their `module` field before `main`.
+Selected CSS package imports also resolve through the package; CSS Modules retain
+the compilation namespace, including direct package subpaths.
 
 The React helpers keep React and its JSX runtimes host-owned automatically. The
 build and dev CLIs also externalize the ComponentOnce React adapter. Programmatic

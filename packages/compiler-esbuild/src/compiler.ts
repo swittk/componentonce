@@ -30,6 +30,7 @@ const DEFAULT_REACT_SOURCE_FILE_NAME = "componentonce-module.tsx";
 const DEFAULT_EVALUATED_SOURCE_NAME = "componentonce-trusted-bundle.js";
 const REACT_EXTERNALS = ["react", "react/jsx-runtime", "react/jsx-dev-runtime"] as const;
 const OUTPUT_DIRECTORY_NAME = ".componentonce-output";
+const PACKAGE_MAIN_FIELDS = ["module", "main"];
 const DEFAULT_FILE_LOADERS: Readonly<Record<string, ComponentOnceAdditionalLoader>> = {
   ".avif": "file",
   ".bmp": "file",
@@ -306,8 +307,9 @@ export async function compileTrustedModule(
       minify: false,
       outdir: outputDirectory,
       platform: "neutral",
+      mainFields: PACKAGE_MAIN_FIELDS,
       plugins: [
-        createCssModuleNamespacePlugin(compilationNamespace, workingDirectory),
+        createCssModuleNamespacePlugin(compilationNamespace, workingDirectory, bundledModules),
         createHostExternalPlugin(allowedExternals, bundledModules),
       ],
       publicPath: COMPONENTONCE_ASSET_URL_PREFIX,
@@ -652,6 +654,7 @@ async function calculateCompilationNamespace(
     minify: false,
     outdir: input.outputDirectory,
     platform: "neutral",
+    mainFields: PACKAGE_MAIN_FIELDS,
     plugins: [
       createHostExternalPlugin(
         input.allowedExternals,
@@ -714,6 +717,7 @@ function updateNamespacedHash(
 function createCssModuleNamespacePlugin(
   compilationNamespace: string,
   workingDirectory: string,
+  bundledModules: ReadonlySet<string>,
 ): Plugin {
   const namespace = "componentonce-local-css";
   return {
@@ -742,9 +746,28 @@ function createCssModuleNamespacePlugin(
         };
       };
 
-      buildApi.onResolve({ filter: /\.module\.css(?:[?#].*)?$/ }, (args) => {
+      const resolvingPackage = {};
+      buildApi.onResolve({ filter: /.*/ }, async (args) => {
+        if (args.pluginData === resolvingPackage) return undefined;
         const reference = splitPathSuffix(args.path);
-        if (!reference.path.startsWith(".")) return undefined;
+        if (matchesBundledModule(reference.path, bundledModules)) {
+          // Resolve package exports/main fields first, including extensionless CSS aliases.
+          const resolved = await buildApi.resolve(args.path, {
+            kind: args.kind,
+            namespace: "file",
+            resolveDir: args.resolveDir,
+            pluginData: resolvingPackage,
+          });
+          if (resolved.errors.length > 0 || resolved.external ||
+              !resolved.path.endsWith(".module.css")) return resolved;
+          return {
+            ...await resolveModule(resolved.path, args.resolveDir, resolved.suffix),
+            warnings: resolved.warnings,
+          };
+        }
+        if (!reference.path.startsWith(".") || !reference.path.endsWith(".module.css")) {
+          return undefined;
+        }
         return resolveModule(reference.path, args.resolveDir, reference.suffix);
       });
       buildApi.onResolve({ filter: /.*/, namespace }, (args) => {
@@ -785,6 +808,8 @@ function createHostExternalPlugin(
       buildApi.onResolve({ filter: /.*/ }, (args) => {
         if (isCssReferenceKind(args.kind)) {
           const reference = splitPathSuffix(args.path);
+          if (!isNonFileCssPath(reference.path) &&
+              matchesBundledModule(reference.path, bundledModules)) return undefined;
           return resolveCssReference(reference.path, reference.suffix, args.resolveDir);
         }
         if (allowedExternals.has(args.path)) {
@@ -903,6 +928,8 @@ function normalizeBundledModules(
       specifier !== specifier.trim() ||
       specifier.startsWith(".") ||
       specifier.startsWith("/") ||
+      specifier.startsWith("\\") ||
+      /^[A-Za-z]:[\\/]/u.test(specifier) ||
       specifier.includes("\0") ||
       specifier.includes("\n") ||
       specifier.includes("\r")
@@ -1111,6 +1138,7 @@ export async function watchTrustedModuleFile(input: ComponentOnceWatchInput): Pr
     bundle: true,
     format: "cjs",
     platform: "neutral",
+    mainFields: PACKAGE_MAIN_FIELDS,
     jsx: input.jsx ?? "transform",
     outdir: resolve(workingDirectory, OUTPUT_DIRECTORY_NAME),
     loader: { ...normalizeLoaders(input.loaders), ...(input.loader === undefined ? {} : { [extname(entry)]: input.loader }) } as Record<string, Loader>,

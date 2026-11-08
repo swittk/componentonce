@@ -102,3 +102,88 @@ it("rejects a bundled package that contains an explicitly external subpath", asy
     externalModules: ["@fixture/formatter/format"],
   })).rejects.toThrow("cannot be both bundled and external");
 });
+
+
+it.each([
+  { fields: { main: "./common.cjs" }, expected: "common" },
+  { fields: { main: "./common.cjs", module: "./module.js" }, expected: "module" },
+])("resolves package main fields consistently: $fields", async ({ fields, expected }) => {
+  await withPackageFixture(async (root) => {
+    const helper = join(root, "node_modules", "@fixture", "helper");
+    await writeFile(join(helper, "package.json"), JSON.stringify({
+      name: "@fixture/helper", version: "1.0.0", type: "module", ...fields,
+    }));
+    await rm(join(helper, "index.js"));
+    await writeFile(join(helper, "common.cjs"), 'exports.value = "common";');
+    await writeFile(join(helper, "module.js"), 'export const value = "module";');
+    const artifact = await compileTrustedModule({
+      source: 'export { value } from "@fixture/helper";',
+      sourceFileName: "entry.ts", resolveDir: root, bundleModules: ["@fixture/helper"],
+    });
+    expect(instantiateTrustedBundle<{ value: string }>(artifact, { externals: {} }).value).toBe(expected);
+  });
+});
+
+it.each(["card.module.css", "card"])("namespaces bundled CSS subpath %s by content and portable dependency paths", async (subpath) => {
+  const compile = async (color: string) => {
+    let className = "";
+    await withPackageFixture(async (root) => {
+      const helper = join(root, "node_modules", "@fixture", "helper");
+      await writeFile(join(helper, "package.json"), JSON.stringify({
+        name: "@fixture/helper", version: color === "red" ? "1.0.0" : "2.0.0",
+        exports: { "./card.module.css": "./card.module.css", "./card": "./card.module.css" },
+      }));
+      await writeFile(join(helper, "card.module.css"), ".root { color: " + color + "; }");
+      const artifact = await compileTrustedModule({
+        source: 'import styles from "@fixture/helper/' + subpath + '"; export { styles };',
+        sourceFileName: "entry.ts", resolveDir: root, bundleModules: ["@fixture/helper"],
+      });
+      className = instantiateTrustedBundle<{ styles: { root: string } }>(artifact, { externals: {} }).styles.root;
+      const css = Buffer.from(artifact.assets!.find((asset) => asset.path === "component.css")!.content, "base64").toString("utf8");
+      expect(css).toContain("." + className);
+    });
+    return className;
+  };
+  const first = await compile("red");
+  expect(await compile("blue")).not.toBe(first);
+  expect(await compile("red")).toBe(first);
+});
+
+it.each(["css", "module.css"])("resolves selected CSS package imports from %s while keeping local references", async (extension) => {
+  await withPackageFixture(async (root) => {
+    const helper = join(root, "node_modules", "@fixture", "helper");
+    await writeFile(join(helper, "package.json"), JSON.stringify({
+      name: "@fixture/helper", version: "1.0.0",
+      exports: { "./theme.css": "./theme.css", "./base.module.css": "./base.module.css" },
+    }));
+    await writeFile(join(helper, "theme.css"), ".package-theme { color: green; }");
+    await writeFile(join(helper, "base.module.css"), ".base { color: blue; }");
+    await writeFile(join(root, "local.css"), ".local-rule { color: red; }");
+    await writeFile(join(root, "image.svg"), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+    await writeFile(join(root, "styles." + extension), [
+      '@import "@fixture/helper/theme.css";',
+      '@import "local.css";',
+      '.root {',
+      extension === "module.css" ? 'composes: base from "@fixture/helper/base.module.css";' : "",
+      'background: url("image.svg?variant=small#icon");',
+      '}',
+    ].join("\n"));
+    const artifact = await compileTrustedModule({
+      source: 'import "./styles.' + extension + '"; export const value = 1;',
+      sourceFileName: "entry.ts", resolveDir: root, bundleModules: ["@fixture/helper"],
+    });
+    const css = Buffer.from(artifact.assets!.find((asset) => asset.path === "component.css")!.content, "base64").toString("utf8");
+    expect(css).toContain("package-theme");
+    expect(css).toContain("local-rule");
+    expect(css).toContain("?variant=small#icon");
+    if (extension === "module.css") expect(css).toContain("color: blue");
+  });
+});
+
+it.each(["C:/workspace/helper.js", "C:\\workspace\\helper.js", "\\\\server\\share\\helper.js", "\\workspace\\helper.js"])(
+  "rejects Windows filesystem bundle selections: %s", async (specifier) => {
+    await expect(compileTrustedModule({
+      source: "export const value = 1;", sourceFileName: "entry.ts", bundleModules: [specifier],
+    })).rejects.toThrow("Invalid bundled module specifier");
+  },
+);

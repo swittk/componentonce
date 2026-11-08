@@ -56,7 +56,7 @@ it("watches imports, CSS Modules and assets; recovers syntax and missing imports
 }, 30000);
 
 
-it("watches an explicitly bundled bare implementation package", async () => {
+it.each(["exports", "main"] as const)("watches a bundled package resolved through %s", async (field) => {
   const dir = await mkdtemp(join(tmpdir(), "componentonce-watch-bundle-"));
   const entry = join(dir, "entry.ts");
   const packageDir = join(dir, "node_modules", "fixture-watch-bundle");
@@ -67,10 +67,10 @@ it("watches an explicitly bundled bare implementation package", async () => {
       name: "fixture-watch-bundle",
       version: "1.0.0",
       type: "module",
-      exports: "./index.js",
+      [field]: "./entry.js",
     }),
   );
-  await writeFile(join(packageDir, "index.js"), 'export const label = "first";\n');
+  await writeFile(join(packageDir, "entry.js"), 'export const label = "first";\n');
   await writeFile(
     entry,
     'import { label } from "fixture-watch-bundle"; export { label };',
@@ -94,7 +94,7 @@ it("watches an explicitly bundled bare implementation package", async () => {
 
     const count = results.length;
     await writeFile(
-      join(packageDir, "index.js"),
+      join(packageDir, "entry.js"),
       'export const label = "second";\n',
     );
     await until(
