@@ -173,18 +173,27 @@ esbuild transpiles TypeScript syntax but does not perform semantic type checking
 
 Bare package imports have an explicit ownership boundary.
 
-    componentonce build ./src/card.tsx       --external @my-app/host-sdk       --bundle @my-team/card-formatters
+```sh
+componentonce build ./src/card.tsx \
+  --external @my-app/host-sdk \
+  --bundle @my-team/card-formatters
+```
 
 External means the host owns that module and must inject it while loading the
 component. Bundle means it is an implementation dependency: esbuild follows the
 package and its subpath imports and stores that code in the ComponentOnce JSON.
 A bundled package does not appear in bundle.externalModules, so the host does
-not need to install or know about it.
+not need to install or know about it. Transitive bare imports also need an explicit
+`--bundle` or `--external` entry; selecting one package does not automatically allow
+all of its dependencies. Package subpaths are included, but similarly named packages
+are not.
 
-React, the React JSX runtimes, and the ComponentOnce React adapter remain
-host-owned automatically. Unknown bare package imports still fail. This keeps
+The React helpers keep React and its JSX runtimes host-owned automatically. The
+build and dev CLIs also externalize the ComponentOnce React adapter. Programmatic
+callers choose adapter ownership through their external module options. Unknown
+bare package imports still fail. This keeps
 host singletons deliberate without turning reusable implementation libraries
 into host ABI.
 
-Programmatic callers use bundleModules with compileTrustedModule and
-additionalBundleModules with compileTrustedReactModule/buildTrustedReactPackage.
+Programmatic callers use `bundleModules` with `compileTrustedModule` and
+`additionalBundleModules` with `compileTrustedReactModule` / `buildTrustedReactPackage`.
