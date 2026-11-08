@@ -259,12 +259,13 @@ it.each(["entry", "bundled package"])("loads dynamic host imports from the injec
   });
 });
 
-it("emits identical CSS classes and artifact hashes for linked packages at different target locations", async () => {
+it.each(["package", "relative-first"])("emits identical linked package artifacts across target locations (%s)", async (order) => {
   const compile = async (targetDirectory: string) => {
     let result: unknown;
     await withPackageFixture(async (root) => {
       const helper = join(root, "node_modules", "@fixture", "helper");
-      await writeFile(join(helper, "index.js"), 'import styles from "./card.module.css"; export { styles };');
+      await writeFile(join(helper, "index.js"), 'import styles from "./card.module.css"; import { label } from "./label.js"; export { styles }; export const value = label + styles.root;');
+      await writeFile(join(helper, "label.js"), 'export const label = "linked:";');
       await writeFile(join(helper, "card.module.css"), '.root { color: blue; }');
       await writeFile(join(helper, "package.json"), JSON.stringify({
         name: "@fixture/helper", version: "1.0.0", type: "module",
@@ -276,8 +277,10 @@ it("emits identical CSS classes and artifact hashes for linked packages at diffe
       await mkdir(join(root, targetDirectory), { recursive: true });
       await rename(helper, target);
       await symlink(target, helper, "dir");
+      await symlink(target, join(root, "shared"), "dir");
       const artifact = await compileTrustedModule({
-        source: 'import "@fixture/helper/theme.css"; export { styles } from "@fixture/helper";',
+        source: (order === "relative-first" ? 'export { value as sharedValue } from "./shared/index.js";' : "") +
+          'import "@fixture/helper/theme.css"; export { styles, value } from "@fixture/helper";',
         sourceFileName: "entry.ts", resolveDir: root, bundleModules: ["@fixture/helper"],
       });
       const { styles } = instantiateTrustedBundle<{ styles: { root: string } }>(artifact, { externals: {} });
@@ -314,5 +317,58 @@ it("keeps linked package transitive resolution and package-type default imports"
     expect(instantiateTrustedBundle<{ value: string }>(artifact, {
       externals: { "host-sdk": host },
     }).value).toBe("[host]");
+  });
+});
+
+
+it("preserves linked package tsconfig JSX and class-field transforms", async () => {
+  await withPackageFixture(async (root) => {
+    const helper = join(root, "node_modules", "@fixture", "helper");
+    const workspacePackage = join(root, "workspace", "helper");
+    await writeFile(join(helper, "package.json"), JSON.stringify({
+      name: "@fixture/helper", version: "1.0.0", type: "module", exports: "./index.tsx",
+    }));
+    await writeFile(join(helper, "tsconfig.json"), JSON.stringify({
+      compilerOptions: { jsxFactory: "h", useDefineForClassFields: false },
+    }));
+    await writeFile(join(helper, "index.tsx"), `
+      const h = (tag, props) => ({ tag, props });
+      class Base { set value(value) { this.assigned = value; } }
+      class Derived extends Base { value = "assigned"; }
+      export const element = <strong label="custom factory" />;
+      export const assigned = new Derived().assigned;
+      export { child } from "./nested/child";
+    `);
+    await mkdir(join(helper, "nested"));
+    await writeFile(join(helper, "nested", "tsconfig.json"), JSON.stringify({
+      extends: "../tsconfig.json",
+      compilerOptions: { jsxFactory: "other", useDefineForClassFields: true },
+    }));
+    await writeFile(join(helper, "nested", "child.tsx"), `
+      const other = (tag) => ({ tag });
+      class Base { set value(value) { this.assigned = value; } }
+      class Derived extends Base { value = "defined"; }
+      export const child = { element: <em />, assigned: new Derived().assigned };
+    `);
+    await mkdir(join(root, "workspace"), { recursive: true });
+    await rename(helper, workspacePackage);
+    await symlink(workspacePackage, helper, "dir");
+    const artifact = await compileTrustedModule({
+      source: 'export { element, assigned, child } from "@fixture/helper";',
+      sourceFileName: "entry.ts", resolveDir: root, bundleModules: ["@fixture/helper"],
+    });
+    const loaded = instantiateTrustedBundle<{
+      element: { tag: string; props: { label: string } }; assigned: string;
+      child: { element: { tag: string }; assigned: undefined };
+    }>(artifact, { externals: {} });
+    expect(loaded.element).toEqual({ tag: "strong", props: { label: "custom factory" } });
+    expect(loaded.assigned).toBe("assigned");
+    expect(loaded.child).toEqual({ element: { tag: "em" }, assigned: undefined });
+    const encodedMap = /sourceMappingURL=data:application\/json;base64,([A-Za-z0-9+/=]+)/u.exec(artifact.code)![1]!;
+    const sourceMap = JSON.parse(Buffer.from(encodedMap, "base64").toString("utf8")) as { sources: string[]; sourcesContent: string[] };
+    expect(sourceMap.sources.some((source) => source.includes("index.tsx"))).toBe(true);
+    expect(sourceMap.sources.some((source) => source.includes("child.tsx"))).toBe(true);
+    expect(sourceMap.sources.every((source) => !source.includes("workspace"))).toBe(true);
+    expect(sourceMap.sourcesContent.some((source) => source.includes('<strong label="custom factory" />'))).toBe(true);
   });
 });

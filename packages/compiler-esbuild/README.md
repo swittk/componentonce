@@ -192,6 +192,9 @@ the compilation namespace, including direct package subpaths. Dependency identit
 come from the import graph, so linked package target locations do not change CSS
 class names or artifact hashes. Package resolution still follows real package
 locations, including unhoisted transitive dependencies in package-manager stores.
+Linked TypeScript/JSX sources retain their per-file tsconfig transformations,
+including inherited JSX factories and class-field settings. Original sources stay
+available in portable source maps.
 
 Trusted artifacts replace `process.env.NODE_ENV` with `"production"` at compile
 time, regardless of the build machine's environment. This does not inject other

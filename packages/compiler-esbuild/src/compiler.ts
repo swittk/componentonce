@@ -317,7 +317,7 @@ export async function compileTrustedModule(
       platform: "neutral",
       mainFields: PACKAGE_MAIN_FIELDS,
       plugins: [
-        createPortableDependencyPlugin(compilation.dependencies, loaders),
+        createPortableDependencyPlugin(compilation.dependencies, loaders, workingDirectory, input.jsx ?? "transform"),
         createCssModuleNamespacePlugin(
           compilation.namespace, workingDirectory, bundledModules, compilation.dependencies,
         ),
@@ -717,20 +717,23 @@ async function collectPortableDependencies(
   const dependencies = new Map<string, PortableDependency>();
   const entryPath = metafile.inputs[sourceFileName] === undefined ? "<stdin>" : sourceFileName;
   const queue = [{ path: entryPath, inPackage: false }];
-  const visited = new Set([entryPath]);
+  const processed = new Map<string, boolean>();
   const packageTypes = new Map<string, boolean>();
   for (let index = 0; index < queue.length; index += 1) {
     const current = queue[index]!;
+    const previous = processed.get(current.path);
+    if (previous === true || (previous === false && !current.inPackage)) continue;
+    processed.set(current.path, current.inPackage);
     const input = metafile.inputs[current.path];
     for (const imported of input?.imports ?? []) {
-      if (imported.external || visited.has(imported.path)) continue;
-      visited.add(imported.path);
+      if (imported.external) continue;
       const original = imported.original ?? "";
       const inPackage = current.inPackage || matchesBundledModule(original, bundledModules);
       queue.push({ path: imported.path, inPackage });
       const absolutePath = resolve(root, splitPathSuffix(imported.path).path);
-      if (dependencies.has(absolutePath)) continue;
-      const stablePath = "dependency/" + dependencies.size + "/" + basename(absolutePath);
+      const existing = dependencies.get(absolutePath);
+      if (existing !== undefined && (!inPackage || existing.virtual)) continue;
+      const stablePath = existing?.stablePath ?? "dependency/" + dependencies.size + "/" + basename(absolutePath);
       const extension = extname(absolutePath);
       // Custom namespaces cannot inherit package.json's type. Preserve esbuild's
       // Node-style default-import semantics using its equivalent explicit extension.
@@ -766,6 +769,8 @@ async function isEsmPackage(directory: string, cache: Map<string, boolean>): Pro
 function createPortableDependencyPlugin(
   dependencies: ReadonlyMap<string, PortableDependency>,
   loaders: Readonly<Record<string, ComponentOnceAdditionalLoader>>,
+  workingDirectory: string,
+  jsx: ComponentOnceJsxMode,
 ): Plugin {
   const namespace = "componentonce-dependency";
   const paths = new Map([...dependencies].map(([realPath, dependency]) => [dependency.modulePath, realPath]));
@@ -775,9 +780,51 @@ function createPortableDependencyPlugin(
     ".ts": "ts", ".mts": "ts", ".cts": "ts", ".tsx": "tsx",
     ".css": "css", ".json": "json", ".txt": "text",
   };
+  const loaderForPath = (realPath: string): Loader => {
+    const configuredExtension = configuredExtensions.find(
+      (suffix) => realPath.toLowerCase().endsWith(suffix),
+    );
+    return (configuredExtension === undefined
+      ? sourceLoaders[extname(realPath).toLowerCase()] ?? "default"
+      : loaders[configuredExtension]!) as Loader;
+  };
   return {
     name: "componentonce-portable-dependencies",
-    setup(buildApi) {
+    async setup(buildApi) {
+      const sourceEntries = [...dependencies].filter(([path, dependency]) =>
+        dependency.virtual && ["js", "jsx", "ts", "tsx"].includes(loaderForPath(path)),
+      );
+      const transformedSources = new Map<string, string>();
+      if (sourceEntries.length > 0) {
+        // Run one native, non-bundling transform for all package sources. Native
+        // file loading retains per-file tsconfig settings, including extends.
+        const transformed = await build({
+          ...TRUSTED_BUILD_OPTIONS,
+          absWorkingDir: workingDirectory,
+          entryPoints: sourceEntries.map(([path, dependency]) => ({ in: path, out: dependency.modulePath })),
+          bundle: false,
+          charset: "utf8",
+          jsx,
+          legalComments: "none",
+          loader: loaders as Record<string, Loader>,
+          logLevel: "silent",
+          metafile: true,
+          outdir: resolve(workingDirectory, ".componentonce-transform"),
+          platform: "neutral",
+          sourcemap: "inline",
+          sourcesContent: true,
+          target: "es2022",
+          write: false,
+        });
+        buildApi.onStart(() => ({ warnings: transformed.warnings }));
+        for (const [path, output] of Object.entries(transformed.metafile!.outputs)) {
+          if (output.entryPoint === undefined) continue;
+          const realPath = resolve(workingDirectory, output.entryPoint);
+          const dependency = dependencies.get(realPath)!;
+          const file = findOutputFile(transformed.outputFiles!, path, workingDirectory)!;
+          transformedSources.set(realPath, makeSourceMapPortable(file.text, dependency.stablePath));
+        }
+      }
       buildApi.onResolve({ filter: /.*/ }, async (args) => {
         if (args.pluginData?.componentOnceResolvingPortable) return undefined;
         const resolved = await buildApi.resolve(args.path, {
@@ -795,16 +842,10 @@ function createPortableDependencyPlugin(
       });
       buildApi.onLoad({ filter: /.*/, namespace }, async (args) => {
         const realPath = paths.get(args.path)!;
-        const extension = extname(realPath).toLowerCase();
-        const configuredExtension = configuredExtensions.find(
-          (suffix) => realPath.toLowerCase().endsWith(suffix),
-        );
-        const loader = configuredExtension === undefined
-          ? sourceLoaders[extension] ?? "default"
-          : loaders[configuredExtension]!;
+        const transformed = transformedSources.get(realPath);
         return {
-          contents: await readFile(realPath),
-          loader: loader as Loader,
+          contents: transformed ?? await readFile(realPath),
+          loader: transformed === undefined ? loaderForPath(realPath) : jsx === "preserve" ? "jsx" : "js",
           resolveDir: dirname(realPath),
           watchFiles: [realPath],
           pluginData: { realPath },
@@ -812,6 +853,25 @@ function createPortableDependencyPlugin(
       });
     },
   };
+}
+
+/** Retain native transform mappings without persisting machine-specific input locations. */
+function makeSourceMapPortable(code: string, stablePath: string): string {
+  return code.replace(
+    /\n\/\/# sourceMappingURL=data:application\/json;base64,([A-Za-z0-9+/=]+)\s*$/u,
+    (_comment, encoded: string) => {
+      const sourceMap = JSON.parse(Buffer.from(encoded, "base64").toString("utf8")) as {
+        sources: string[]; sourceRoot?: string; file?: string;
+      };
+      sourceMap.sources = sourceMap.sources.map((source, index) =>
+        "componentonce-source:" + stablePath + "/" + index + "/" + basename(source.replace(/\\/gu, "/")),
+      );
+      delete sourceMap.sourceRoot;
+      delete sourceMap.file;
+      return "\n//# sourceMappingURL=data:application/json;base64," +
+        Buffer.from(JSON.stringify(sourceMap)).toString("base64") + "\n";
+    },
+  );
 }
 
 function updateNamespacedHash(
