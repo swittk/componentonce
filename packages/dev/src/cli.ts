@@ -5,7 +5,7 @@ import { realpathSync } from "node:fs";
 import { createComponentOnceDevServer } from "./server.js";
 
 const printHelp = () =>
-  console.log("Usage: componentonce dev <entry.tsx> [--host browser-host.ts] [--external exact/specifier] [--port 4173] [--bind 127.0.0.1] [--allowed-host name] [--export definition]\n       componentonce-dev <entry.tsx> [same options]\nLocal trusted-code React workbench. Loopback is the default; --bind 0.0.0.0 explicitly exposes it to local interfaces.");
+  console.log("Usage: componentonce dev <entry.tsx> [--host browser-host.ts] [--external exact/specifier] [--bundle package/specifier] [--port 4173] [--bind 127.0.0.1] [--allowed-host name] [--export definition]\n       componentonce-dev <entry.tsx> [same options]\nLocal trusted-code React workbench. Loopback is the default; --bind 0.0.0.0 explicitly exposes it to local interfaces.");
 
 /** Run the local workbench CLI; Ctrl-C disposes compilers and releases its port. */
 export async function runComponentOnceDevCli(args: readonly string[]): Promise<void> {
@@ -24,6 +24,7 @@ export async function runComponentOnceDevCli(args: readonly string[]): Promise<v
   let bind = "127.0.0.1";
   let definitionExport = "definition";
   const externalModules: string[] = [];
+  const bundleModules: string[] = [];
   const allowedHosts: string[] = [];
   for (let index = 1; index < args.length; index += 1) {
     const flag = args[index];
@@ -37,7 +38,8 @@ export async function runComponentOnceDevCli(args: readonly string[]): Promise<v
       case "--bind":
       case "--allowed-host":
       case "--export":
-      case "--external": {
+      case "--external":
+      case "--bundle": {
         const value = args[index + 1];
         if (value === undefined || value.startsWith("-")) {
           throw new Error(String(flag) + " requires a value.");
@@ -48,6 +50,7 @@ export async function runComponentOnceDevCli(args: readonly string[]): Promise<v
         else if (flag === "--bind") bind = value;
         else if (flag === "--allowed-host") allowedHosts.push(value);
         else if (flag === "--export") definitionExport = value;
+        else if (flag === "--bundle") bundleModules.push(value);
         else externalModules.push(value);
         break;
       }
@@ -55,7 +58,16 @@ export async function runComponentOnceDevCli(args: readonly string[]): Promise<v
         throw new Error("Unknown dev option " + flag);
     }
   }
-  const server = await createComponentOnceDevServer({ entry, port, bind, allowedHosts, externalModules, definitionExport, ...(host === undefined ? {} : { host }) });
+  const server = await createComponentOnceDevServer({
+    entry,
+    port,
+    bind,
+    allowedHosts,
+    externalModules,
+    bundleModules,
+    definitionExport,
+    ...(host === undefined ? {} : { host }),
+  });
   console.log(
     "ComponentOnce Dev\n" +
       server.urls.map((url) => "  " + url).join("\n") +

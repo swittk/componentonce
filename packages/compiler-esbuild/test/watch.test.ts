@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { expect, it } from "vitest";
-import { compileTrustedModule, watchTrustedModuleFile, type ComponentOnceWatchResult } from "../src/index.js";
+import { compileTrustedModule, instantiateTrustedBundle, watchTrustedModuleFile, type ComponentOnceWatchResult } from "../src/index.js";
 
 async function until(predicate: () => boolean) {
   const end = Date.now() + 10000;
@@ -47,10 +47,196 @@ it("watches imports, CSS Modules and assets; recovers syntax and missing imports
     await writeFile(entry, 'import fs from "node:fs"; export {fs};');
     await until(() => results.length > count && results.at(-1)?.ok === false);
     const error = results.at(-1);
-    expect(error && !error.ok && error.diagnostics[0]?.text).toContain("not an allowed host external");
+    expect(error && !error.ok && error.diagnostics[0]?.text).toContain("neither a bundled implementation module nor an allowed host external");
     await writeFile(entry, source);
     await watcher.rebuild();
     expect(results.at(-1)?.ok).toBe(true);
     expect(await readFile(entry, "utf8")).toBe(source);
   } finally { await watcher.dispose(); await watcher.dispose(); await rm(dir, { recursive: true, force: true }); }
+}, 30000);
+
+
+it.each(["exports", "main"] as const)("watches a bundled package resolved through %s", async (field) => {
+  const dir = await mkdtemp(join(tmpdir(), "componentonce-watch-bundle-"));
+  const entry = join(dir, "entry.ts");
+  const packageDir = join(dir, "node_modules", "fixture-watch-bundle");
+  await mkdir(packageDir, { recursive: true });
+  await writeFile(
+    join(packageDir, "package.json"),
+    JSON.stringify({
+      name: "fixture-watch-bundle",
+      version: "1.0.0",
+      type: "module",
+      [field]: "./entry.js",
+    }),
+  );
+  await writeFile(join(packageDir, "entry.js"), [
+    'if (process.env.NODE_ENV !== "production") require("development-only");',
+    'export const label = "first";',
+  ].join("\n"));
+  await writeFile(
+    entry,
+    'import { label } from "fixture-watch-bundle"; export { label };',
+  );
+  const results: ComponentOnceWatchResult[] = [];
+  const watcher = await watchTrustedModuleFile({
+    entry,
+    bundleModules: ["fixture-watch-bundle"],
+    onBuild(result) {
+      results.push(result);
+    },
+  });
+  try {
+    await until(() => results.some((result) => result.ok));
+    const first = results.find(
+      (result): result is Extract<ComponentOnceWatchResult, { ok: true }> =>
+        result.ok,
+    );
+    expect(first?.artifact.externalModules).toEqual([]);
+    expect(first).toBeDefined();
+    expect(instantiateTrustedBundle<{ label: string }>(first!.artifact, { externals: {} }).label).toBe("first");
+
+    const count = results.length;
+    await writeFile(
+      join(packageDir, "entry.js"),
+      'export const label = "second";\n',
+    );
+    await until(
+      () =>
+        results.length > count &&
+        results.at(-1)?.ok === true &&
+        (
+          results.at(-1) as Extract<ComponentOnceWatchResult, { ok: true }>
+        ).artifact.code.includes("second"),
+    );
+    const rebuilt = results.at(-1);
+    expect(rebuilt?.ok).toBe(true);
+    if (rebuilt?.ok) {
+      expect(instantiateTrustedBundle<{ label: string }>(rebuilt.artifact, { externals: {} }).label).toBe("second");
+    }
+  } finally {
+    await watcher.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20000);
+
+it("refreshes private import scopes when a nested package manifest changes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "componentonce-watch-scopes-"));
+  const entry = join(dir, "entry.ts");
+  const nested = join(dir, "nested");
+  await mkdir(nested);
+  const manifest = JSON.stringify({ type: "module", imports: { "#value": "./value.js" } });
+  await writeFile(join(dir, "package.json"), manifest);
+  await writeFile(join(nested, "package.json"), manifest);
+  await writeFile(join(dir, "value.js"), 'export const label = "ancestor";');
+  await writeFile(join(nested, "value.js"), 'export const label = "nested";');
+  await writeFile(join(nested, "index.js"), 'export { label } from "#value";');
+  await writeFile(entry, 'export { label } from "./nested/index.js";');
+  const results: ComponentOnceWatchResult[] = [];
+  const watcher = await watchTrustedModuleFile({
+    entry,
+    onBuild(result) { results.push(result); },
+  });
+  const latestLabel = () => {
+    const result = results.at(-1);
+    expect(result?.ok).toBe(true);
+    if (!result?.ok) return undefined;
+    return instantiateTrustedBundle<{ label: string }>(result.artifact, { externals: {} }).label;
+  };
+  try {
+    await until(() => results.some((result) => result.ok));
+    expect(latestLabel()).toBe("nested");
+    let count = results.length;
+    await rm(join(nested, "package.json"));
+    await until(() => results.length > count && results.at(-1)?.ok === true);
+    expect(latestLabel()).toBe("ancestor");
+    count = results.length;
+    await writeFile(join(nested, "package.json"), manifest);
+    await until(() => results.length > count && results.at(-1)?.ok === true);
+    expect(latestLabel()).toBe("nested");
+  } finally {
+    await watcher.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20000);
+
+
+it("automatically recovers when a missing private import target is created", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "componentonce-watch-private-missing-"));
+  const entry = join(dir, "entry.ts");
+  const target = join(dir, "local.js");
+  await writeFile(join(dir, "package.json"), JSON.stringify({
+    type: "module", imports: { "#local": "./local.js" },
+  }));
+  await writeFile(entry, 'export { value } from "#local";');
+  const results: ComponentOnceWatchResult[] = [];
+  const watcher = await watchTrustedModuleFile({
+    entry,
+    onBuild(result) { results.push(result); },
+  });
+  try {
+    await until(() => results.length > 0);
+    expect(results.at(-1)?.ok).toBe(false);
+    for (const value of ["first", "recreated"]) {
+      const count = results.length;
+      await writeFile(target, 'export const value = ' + JSON.stringify(value) + ';');
+      await until(() => results.length > count && results.at(-1)?.ok === true);
+      const result = results.at(-1);
+      if (!result?.ok) throw new Error("Expected a successful rebuild.");
+      expect(instantiateTrustedBundle<{ value: string }>(result.artifact, { externals: {} }).value).toBe(value);
+      const successfulCount = results.length;
+      await rm(target);
+      await until(() => results.length > successfulCount && results.at(-1)?.ok === false);
+    }
+  } finally {
+    await watcher.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30000);
+
+it.each(["import-rule", "composes-from"])("recovers a rejected private CSS alias after its manifest changes (%s)", async (kind) => {
+  const dir = await mkdtemp(join(tmpdir(), "componentonce-watch-private-css-"));
+  const entry = join(dir, "entry.ts");
+  const nested = join(dir, "nested");
+  await mkdir(nested);
+  const manifest = join(nested, "package.json");
+  const writeAlias = (target: string) => writeFile(manifest, JSON.stringify({
+    imports: { "#theme": target },
+  }));
+  if (kind === "import-rule") {
+    await writeFile(entry, 'import "./entry.css"; export const value = 1;');
+    await writeFile(join(dir, "entry.css"), '@import "./nested/style.css";');
+    await writeFile(join(nested, "style.css"), '@import "#theme";');
+  } else {
+    await writeFile(entry, 'import style from "./nested/style.module.css"; export { style };');
+    await writeFile(join(nested, "style.module.css"), '.root { composes: theme from "#theme"; }');
+  }
+  await writeFile(join(nested, "theme.module.css"), ".theme { color: red; }");
+  await writeAlias("unselected-theme");
+  const results: ComponentOnceWatchResult[] = [];
+  const watcher = await watchTrustedModuleFile({
+    entry,
+    onBuild(result) { results.push(result); },
+  });
+  try {
+    await until(() => results.length > 0);
+    expect(results.at(-1)?.ok).toBe(false);
+    for (let cycle = 0; cycle < 2; cycle++) {
+      const count = results.length;
+      await writeAlias("./theme.module.css");
+      await until(() => results.length > count && results.at(-1)?.ok === true);
+      const result = results.at(-1);
+      if (!result?.ok) throw new Error("Expected a successful rebuild.");
+      const css = result.artifact.assets
+        .filter((asset) => asset.contentType === "text/css")
+        .map((asset) => Buffer.from(asset.content, "base64").toString("utf8")).join("\n");
+      expect(css).toContain("color: red");
+      const successfulCount = results.length;
+      await writeAlias("unselected-theme");
+      await until(() => results.length > successfulCount && results.at(-1)?.ok === false);
+    }
+  } finally {
+    await watcher.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
 }, 30000);
