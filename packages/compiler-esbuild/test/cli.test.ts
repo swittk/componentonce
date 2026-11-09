@@ -101,7 +101,7 @@ it.each(["test", "react"])("bundles both required packages from repeated --bundl
       await writeFile(join(adapterDirectory, "package.json"), JSON.stringify({
         name: "@componentonce/react", type: "module", exports: "./index.js",
       }));
-      await writeFile(join(adapterDirectory, "index.js"), "export {};");
+      await writeFile(join(adapterDirectory, "index.js"), 'export const fixtureAdapterMarker = "host adapter";');
     }
     const packageDirectory = join(root, "node_modules", "fixture-cli-bundle");
     await mkdir(packageDirectory, { recursive: true });
@@ -130,6 +130,10 @@ it.each(["test", "react"])("bundles both required packages from repeated --bundl
       entry,
       [
         'import { id, format } from "fixture-cli-bundle";',
+        ...(renderer === "react" ? [
+          'import { fixtureAdapterMarker } from "@componentonce/react";',
+          'if (fixtureAdapterMarker !== "host adapter") throw new Error("Missing host adapter");',
+        ] : []),
         "export const definition = {",
         '  manifest: { id, version: "1.0.0" },',
         '  implementation: () => format("rendered"),',
@@ -160,10 +164,16 @@ it.each(["test", "react"])("bundles both required packages from repeated --bundl
     const componentPackage = parseTrustedComponentPackage(await readFile(out));
     expect(componentPackage.renderer).toBe(renderer);
     expect(componentPackage.manifest.id).toBe("consumer.bundled");
-    expect(componentPackage.bundle.externalModules).toEqual([]);
+    expect(componentPackage.bundle.externalModules).toEqual(
+      renderer === "react" ? ["@componentonce/react"] : [],
+    );
     const loaded = instantiateTrustedBundle<{
       definition: { implementation(): string };
-    }>(componentPackage.bundle, { externals: {} });
+    }>(componentPackage.bundle, {
+      externals: renderer === "react"
+        ? { "@componentonce/react": { fixtureAdapterMarker: "host adapter" } }
+        : {},
+    });
     expect(loaded.definition.implementation()).toBe("rendered bundled");
   } finally {
     await rm(root, { recursive: true, force: true });

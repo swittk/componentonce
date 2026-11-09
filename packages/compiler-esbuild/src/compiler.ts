@@ -939,6 +939,7 @@ function createHostExternalPlugin(
         ) {
           return undefined;
         }
+        const watchFiles: string[] = [];
         if (args.path.startsWith("#")) {
           // Native resolution follows file targets across nested scopes while
           // marking dependency targets external, even through workspace links.
@@ -955,8 +956,16 @@ function createHostExternalPlugin(
           // so creating a private target also wakes an active watcher.
           if (resolved.errors.length > 0) return undefined;
           if (resolved.namespace === "file" && !resolved.external) return undefined;
+          // The separate resolver's manifest reads are not part of this watch
+          // graph. Watch candidate scopes so edits, creation, and deletion can
+          // recover a rejected alias without requiring a manual rebuild.
+          for (let directory = resolve(args.resolveDir); ; directory = dirname(directory)) {
+            watchFiles.push(resolve(directory, "package.json"));
+            if (dirname(directory) === directory) break;
+          }
         }
         return {
+          watchFiles,
           errors: [
             {
               text:

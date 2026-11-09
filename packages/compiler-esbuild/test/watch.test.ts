@@ -193,3 +193,50 @@ it("automatically recovers when a missing private import target is created", asy
     await rm(dir, { recursive: true, force: true });
   }
 }, 30000);
+
+it.each(["import-rule", "composes-from"])("recovers a rejected private CSS alias after its manifest changes (%s)", async (kind) => {
+  const dir = await mkdtemp(join(tmpdir(), "componentonce-watch-private-css-"));
+  const entry = join(dir, "entry.ts");
+  const nested = join(dir, "nested");
+  await mkdir(nested);
+  const manifest = join(nested, "package.json");
+  const writeAlias = (target: string) => writeFile(manifest, JSON.stringify({
+    imports: { "#theme": target },
+  }));
+  if (kind === "import-rule") {
+    await writeFile(entry, 'import "./entry.css"; export const value = 1;');
+    await writeFile(join(dir, "entry.css"), '@import "./nested/style.css";');
+    await writeFile(join(nested, "style.css"), '@import "#theme";');
+  } else {
+    await writeFile(entry, 'import style from "./nested/style.module.css"; export { style };');
+    await writeFile(join(nested, "style.module.css"), '.root { composes: theme from "#theme"; }');
+  }
+  await writeFile(join(nested, "theme.module.css"), ".theme { color: red; }");
+  await writeAlias("unselected-theme");
+  const results: ComponentOnceWatchResult[] = [];
+  const watcher = await watchTrustedModuleFile({
+    entry,
+    onBuild(result) { results.push(result); },
+  });
+  try {
+    await until(() => results.length > 0);
+    expect(results.at(-1)?.ok).toBe(false);
+    for (let cycle = 0; cycle < 2; cycle++) {
+      const count = results.length;
+      await writeAlias("./theme.module.css");
+      await until(() => results.length > count && results.at(-1)?.ok === true);
+      const result = results.at(-1);
+      if (!result?.ok) throw new Error("Expected a successful rebuild.");
+      const css = result.artifact.assets
+        .filter((asset) => asset.contentType === "text/css")
+        .map((asset) => Buffer.from(asset.content, "base64").toString("utf8")).join("\n");
+      expect(css).toContain("color: red");
+      const successfulCount = results.length;
+      await writeAlias("unselected-theme");
+      await until(() => results.length > successfulCount && results.at(-1)?.ok === false);
+    }
+  } finally {
+    await watcher.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30000);
